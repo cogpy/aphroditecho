@@ -19,8 +19,70 @@ include_directories("${CMAKE_SOURCE_DIR}/kernels")
 
 #
 # Import PyTorch for CPU extensions to access torch headers and libraries
+# For CPU builds with CUDA-enabled PyTorch, we bypass PyTorch's CMake and get paths directly
 #
-find_package(Torch REQUIRED)
+message(STATUS "Getting PyTorch library paths for CPU build...")
+
+# Get PyTorch include directories from Python
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c "import torch.utils.cpp_extension; print(';'.join(torch.utils.cpp_extension.include_paths()))"
+    OUTPUT_VARIABLE TORCH_INCLUDE_DIRS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE TORCH_INCLUDE_RESULT
+)
+
+if(NOT TORCH_INCLUDE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to get PyTorch include directories")
+endif()
+
+# Get PyTorch library directories from Python  
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c "import torch.utils.cpp_extension; print(';'.join(torch.utils.cpp_extension.library_paths()))"
+    OUTPUT_VARIABLE TORCH_LIBRARY_DIRS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE TORCH_LIBRARY_RESULT
+)
+
+if(NOT TORCH_LIBRARY_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to get PyTorch library directories")
+endif()
+
+# Get PyTorch libraries from Python
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c "import torch.utils.cpp_extension; libs=[lib for lib in torch.utils.cpp_extension.COMMON_LINK_FLAGS if not lib.startswith('-') and 'cuda' not in lib.lower()]; print(';'.join(libs) if libs else 'torch;torch_cpu')"
+    OUTPUT_VARIABLE TORCH_LIBRARIES
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE TORCH_LIBRARIES_RESULT
+)
+
+if(NOT TORCH_LIBRARIES_RESULT EQUAL 0)
+    message(STATUS "Could not get PyTorch libraries from Python, using defaults")
+    set(TORCH_LIBRARIES "torch;torch_cpu")
+endif()
+
+# Create imported target for torch
+if(NOT TARGET torch)
+    add_library(torch SHARED IMPORTED)
+    find_library(TORCH_LIBRARY torch PATHS ${TORCH_LIBRARY_DIRS} NO_DEFAULT_PATH)
+    if(TORCH_LIBRARY)
+        set_target_properties(torch PROPERTIES 
+            IMPORTED_LOCATION ${TORCH_LIBRARY}
+            INTERFACE_INCLUDE_DIRECTORIES "${TORCH_INCLUDE_DIRS}"
+        )
+    endif()
+endif()
+
+# Also add the include directories globally in case some parts expect them
+include_directories(${TORCH_INCLUDE_DIRS})
+
+# Set the variables that the rest of the build expects
+set(Torch_FOUND TRUE)
+set(TORCH_INCLUDE_DIRS ${TORCH_INCLUDE_DIRS})
+set(TORCH_LIBRARIES torch)
+
+message(STATUS "PyTorch include dirs: ${TORCH_INCLUDE_DIRS}")
+message(STATUS "PyTorch library dirs: ${TORCH_LIBRARY_DIRS}")
+message(STATUS "PyTorch libraries: ${TORCH_LIBRARIES}")
 message(STATUS "Found PyTorch ${Torch_VERSION}")
 
 set (ENABLE_NUMA TRUE)
