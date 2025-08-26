@@ -8,11 +8,22 @@ Integrates with Aphrodite Engine and Echo-Self Evolution Engine.
 from typing import Dict, List, Any, Optional
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 
 from ..agents.agent_manager import AgentManager, AgentCapabilities, AgentStatus
 from ..arena.simulation_engine import SimulationEngine, ArenaType
 from ..relations.relation_graph import RelationGraph, RelationType
+
+# Import social cognition extensions
+try:
+    from ..agents.social_cognition_manager import SocialCognitionManager
+    from ..relations.communication_protocols import CommunicationProtocols
+    from ..orchestration.collaborative_solver import CollaborativeProblemSolver
+    SOCIAL_COGNITION_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Social cognition components not available: {e}")
+    SOCIAL_COGNITION_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +37,11 @@ class AARConfig:
     resource_allocation_strategy: str = "adaptive"
     agent_lifecycle_timeout: int = 300  # seconds
     performance_monitoring_interval: int = 10  # seconds
+    # Social cognition configuration
+    social_cognition_enabled: bool = True
+    max_shared_resources: int = 1000
+    max_concurrent_problems: int = 100
+    communication_protocols_enabled: bool = True
 
 
 class AARCoreOrchestrator:
@@ -38,6 +54,24 @@ class AARCoreOrchestrator:
         self.agent_manager = AgentManager(config.max_concurrent_agents)
         self.simulation_engine = SimulationEngine() if config.arena_simulation_enabled else None
         self.relation_graph = RelationGraph(config.relation_graph_depth)
+        
+        # Initialize social cognition components
+        self.social_cognition_manager = None
+        self.communication_protocols = None
+        self.collaborative_solver = None
+        
+        if SOCIAL_COGNITION_AVAILABLE and config.social_cognition_enabled:
+            self.social_cognition_manager = SocialCognitionManager(config.max_shared_resources)
+            logger.info("Social Cognition Manager initialized")
+            
+            if config.communication_protocols_enabled:
+                self.communication_protocols = CommunicationProtocols()
+                logger.info("Communication Protocols initialized")
+            
+            self.collaborative_solver = CollaborativeProblemSolver(config.max_concurrent_problems)
+            logger.info("Collaborative Problem Solver initialized")
+        else:
+            logger.info("Social cognition extensions disabled or unavailable")
         
         # Integration points
         self.aphrodite_engine = None
@@ -76,7 +110,7 @@ class AARCoreOrchestrator:
     
     async def orchestrate_inference(self, 
                                       request: Dict[str, Any]) -> Dict[str, Any]:
-        """Orchestrate inference through agent-arena system."""
+        """Orchestrate inference through agent-arena system with social cognition."""
         try:
             self.performance_stats['total_requests'] += 1
             start_time = asyncio.get_event_loop().time()
@@ -87,12 +121,20 @@ class AARCoreOrchestrator:
             if not allocated_agents:
                 return {'error': 'No agents available for request'}
             
-            # Step 2: Create or select virtual arena if simulation enabled
+            # Step 2: Register agents for social cognition (if enabled)
+            if self.social_cognition_manager:
+                await self._register_agents_for_social_cognition(allocated_agents)
+            
+            # Step 3: Create or select virtual arena if simulation enabled
             arena_id = None
             if self.simulation_engine:
                 arena_id = await self._get_arena(request.get('context', {}))
             
-            # Step 3: Execute distributed inference
+            # Step 4: Check if this requires collaborative problem solving
+            if self._requires_collaboration(request) and self.collaborative_solver:
+                return await self._handle_collaborative_request(request, allocated_agents, arena_id, start_time)
+            
+            # Step 5: Execute distributed inference (original logic)
             results = []
             for agent_id in allocated_agents:
                 # Get agent data
@@ -116,10 +158,10 @@ class AARCoreOrchestrator:
                 
                 results.append(agent_result)
             
-            # Step 4: Aggregate results through relation graph
+            # Step 6: Aggregate results through relation graph
             final_result = await self.relation_graph.aggregate_results(results)
             
-            # Step 5: Update relationships based on performance
+            # Step 7: Update relationships based on performance
             await self._update_relations(allocated_agents, final_result)
             
             # Update performance metrics
@@ -133,7 +175,9 @@ class AARCoreOrchestrator:
                     'agents_used': len(allocated_agents),
                     'arena_id': arena_id,
                     'processing_time': response_time,
-                    'request_id': request.get('request_id', 'unknown')
+                    'request_id': request.get('request_id', 'unknown'),
+                    'social_cognition_enabled': self.social_cognition_manager is not None,
+                    'collaboration_used': False
                 }
             })
             
@@ -267,6 +311,20 @@ class AARCoreOrchestrator:
         simulation_stats = self.simulation_engine.get_system_stats() if self.simulation_engine else {}
         relation_stats = self.relation_graph.get_graph_stats() if self.relation_graph else {}
         
+        # Get social cognition stats
+        social_cognition_stats = {}
+        communication_stats = {}
+        collaborative_solver_stats = {}
+        
+        if self.social_cognition_manager:
+            social_cognition_stats = self.social_cognition_manager.get_social_cognition_stats()
+            
+        if self.communication_protocols:
+            communication_stats = self.communication_protocols.get_communication_stats()
+            
+        if self.collaborative_solver:
+            collaborative_solver_stats = self.collaborative_solver.get_solver_stats()
+        
         # Extract active agents count for top-level access
         active_agents_count = 0
         if agent_stats and 'agent_counts' in agent_stats:
@@ -279,12 +337,18 @@ class AARCoreOrchestrator:
             'integration_status': {
                 'aphrodite_engine': self.aphrodite_engine is not None,
                 'dtesn_kernel': self.dtesn_kernel is not None,
-                'echo_self_engine': self.echo_self_engine is not None
+                'echo_self_engine': self.echo_self_engine is not None,
+                'social_cognition_manager': self.social_cognition_manager is not None,
+                'communication_protocols': self.communication_protocols is not None,
+                'collaborative_solver': self.collaborative_solver is not None
             },
             'component_stats': {
                 'agents': agent_stats,
                 'simulation': simulation_stats,
-                'relations': relation_stats
+                'relations': relation_stats,
+                'social_cognition': social_cognition_stats,
+                'communication': communication_stats,
+                'collaborative_solver': collaborative_solver_stats
             },
             'system_health': await self._calculate_system_health()
         }
@@ -527,7 +591,17 @@ class AARCoreOrchestrator:
         """Graceful shutdown of orchestration system."""
         logger.info("Shutting down AAR Core Orchestrator...")
         
-        # Shutdown components in order
+        # Shutdown social cognition components first
+        if self.collaborative_solver:
+            await self.collaborative_solver.shutdown()
+        
+        if self.communication_protocols:
+            await self.communication_protocols.shutdown()
+            
+        if self.social_cognition_manager:
+            await self.social_cognition_manager.shutdown()
+        
+        # Shutdown core components
         if self.agent_manager:
             await self.agent_manager.shutdown()
         
@@ -538,3 +612,213 @@ class AARCoreOrchestrator:
             await self.relation_graph.shutdown()
         
         logger.info("AAR Core Orchestrator shutdown complete")
+    
+    # Social Cognition Helper Methods
+    
+    def _requires_collaboration(self, request: Dict[str, Any]) -> bool:
+        """Determine if request requires collaborative problem solving."""
+        if not self.collaborative_solver:
+            return False
+            
+        # Check for explicit collaboration requirement
+        if request.get('collaboration_required', False):
+            return True
+        
+        # Check for collaboration indicators in features
+        features = request.get('features', [])
+        collaboration_indicators = ['collaboration', 'complex_reasoning', 'distributed_problem', 'multi_agent']
+        
+        if any(indicator in features for indicator in collaboration_indicators):
+            return True
+        
+        # Check context for collaboration hints
+        context = request.get('context', {})
+        if context.get('problem_complexity', 'low') in ['high', 'very_high']:
+            return True
+            
+        return False
+    
+    async def _register_agents_for_social_cognition(self, agent_ids: List[str]) -> None:
+        """Register agents for social cognition if enabled."""
+        if not self.social_cognition_manager:
+            return
+        
+        for agent_id in agent_ids:
+            agent = self.agent_manager.agents.get(agent_id)
+            if agent and hasattr(agent, 'cognitive_profile'):
+                await self.social_cognition_manager.register_agent(agent_id, agent.cognitive_profile)
+                
+                # Also register for communication protocols
+                if self.communication_protocols:
+                    await self.communication_protocols.register_agent(agent_id)
+    
+    async def _handle_collaborative_request(self, 
+                                          request: Dict[str, Any], 
+                                          allocated_agents: List[str], 
+                                          arena_id: Optional[str],
+                                          start_time: float) -> Dict[str, Any]:
+        """Handle request that requires collaborative problem solving."""
+        try:
+            # Import here to avoid circular imports
+            from ..orchestration.collaborative_solver import ProblemDefinition, ProblemType, SolutionStrategy
+            
+            # Create problem definition
+            problem = ProblemDefinition(
+                problem_id=f"prob_{uuid.uuid4().hex[:8]}",
+                problem_type=self._determine_problem_type(request),
+                title=request.get('title', 'Collaborative Problem'),
+                description=request.get('description', 'Complex problem requiring collaboration'),
+                objectives=request.get('objectives', ['Solve the problem effectively']),
+                constraints=request.get('constraints', {}),
+                success_criteria=request.get('success_criteria', {'quality': 0.8}),
+                complexity_level=request.get('context', {}).get('problem_complexity', 'medium'),
+                required_capabilities=request.get('required_capabilities', {}).get('capabilities', []),
+                input_data=request.get('input_data', {}),
+                context=request.get('context', {})
+            )
+            
+            # Determine strategy
+            strategy = SolutionStrategy.CONSENSUS
+            if 'strategy' in request:
+                try:
+                    strategy = SolutionStrategy(request['strategy'])
+                except ValueError:
+                    pass  # Use default
+            
+            # Start collaborative problem solving
+            session_id = await self.collaborative_solver.initiate_collaborative_problem(
+                problem, allocated_agents, allocated_agents[0], strategy
+            )
+            
+            # Get agent capabilities for task assignment
+            agent_capabilities = {}
+            for agent_id in allocated_agents:
+                agent = self.agent_manager.agents.get(agent_id)
+                if agent and hasattr(agent, 'capabilities'):
+                    caps = agent.capabilities
+                    agent_capabilities[agent_id] = []
+                    
+                    if caps.reasoning:
+                        agent_capabilities[agent_id].extend(['reasoning', 'logical_analysis'])
+                    if caps.multimodal:
+                        agent_capabilities[agent_id].extend(['multimodal', 'pattern_recognition'])
+                    if caps.learning_enabled:
+                        agent_capabilities[agent_id].extend(['learning', 'adaptation'])
+                    if caps.collaboration:
+                        agent_capabilities[agent_id].extend(['collaboration', 'communication'])
+                    
+                    # Add specialized domains
+                    agent_capabilities[agent_id].extend(caps.specialized_domains)
+            
+            # Assign tasks to agents
+            assignments = await self.collaborative_solver.assign_tasks_to_agents(session_id, agent_capabilities)
+            
+            # Simulate task execution and solution submission
+            # In a real implementation, this would involve actual task processing
+            await asyncio.sleep(0.1)  # Simulate processing time
+            
+            # Submit mock solutions for demonstration
+            session = self.collaborative_solver.active_sessions.get(session_id)
+            if session:
+                for agent_id, task_ids in assignments.items():
+                    for task_id in task_ids:
+                        solution_data = {
+                            'solution_approach': f'Approach from {agent_id}',
+                            'results': {'status': 'completed', 'quality': 0.8},
+                            'reasoning': f'Agent {agent_id} completed task {task_id} using collaborative approach'
+                        }
+                        
+                        await self.collaborative_solver.submit_task_solution(
+                            session_id, task_id, agent_id, solution_data, 0.8
+                        )
+            
+            # Check for completion (might already be completed if all tasks were submitted)
+            final_result = {'collaborative_solution': True}
+            
+            if session_id not in self.collaborative_solver.active_sessions:
+                # Problem was completed
+                completed_sessions = [s for s in self.collaborative_solver.completed_sessions 
+                                    if s.session_id == session_id]
+                if completed_sessions:
+                    completed_session = completed_sessions[-1]
+                    final_result = {
+                        'collaborative_solution': True,
+                        'problem_id': problem.problem_id,
+                        'session_id': session_id,
+                        'final_solution': completed_session.final_solution,
+                        'participating_agents': allocated_agents,
+                        'collaboration_metrics': completed_session.collaboration_metrics
+                    }
+            else:
+                # Problem still in progress
+                problem_status = self.collaborative_solver.get_problem_status(session_id)
+                final_result = {
+                    'collaborative_solution': True,
+                    'problem_id': problem.problem_id,
+                    'session_id': session_id,
+                    'status': 'in_progress',
+                    'progress': problem_status['progress'] if problem_status else {},
+                    'participating_agents': allocated_agents
+                }
+            
+            # Update performance metrics
+            end_time = asyncio.get_event_loop().time()
+            response_time = end_time - start_time
+            await self._update_performance_stats(response_time, success=True)
+            
+            # Add orchestration metadata
+            final_result.update({
+                'orchestration_meta': {
+                    'agents_used': len(allocated_agents),
+                    'arena_id': arena_id,
+                    'processing_time': response_time,
+                    'request_id': request.get('request_id', 'unknown'),
+                    'social_cognition_enabled': True,
+                    'collaboration_used': True,
+                    'problem_type': problem.problem_type.value if hasattr(problem.problem_type, 'value') else str(problem.problem_type)
+                }
+            })
+            
+            return final_result
+            
+        except Exception as e:
+            logger.error(f"Error in collaborative request handling: {e}")
+            return {'error': f'Collaborative processing failed: {str(e)}'}
+    
+    def _determine_problem_type(self, request: Dict[str, Any]):
+        """Determine the type of problem for collaborative solving."""
+        # Import here to avoid circular imports
+        try:
+            from ..orchestration.collaborative_solver import ProblemType
+        except ImportError:
+            return 'reasoning'  # Fallback string
+        
+        # Check explicit problem type
+        problem_type_str = request.get('problem_type', '').lower()
+        
+        try:
+            return ProblemType(problem_type_str)
+        except (ValueError, AttributeError):
+            pass
+        
+        # Infer from features
+        features = request.get('features', [])
+        
+        if any(f in features for f in ['optimization', 'minimize', 'maximize']):
+            return ProblemType.OPTIMIZATION
+        elif any(f in features for f in ['classification', 'categorize', 'classify']):
+            return ProblemType.CLASSIFICATION
+        elif any(f in features for f in ['planning', 'plan', 'strategy']):
+            return ProblemType.PLANNING
+        elif any(f in features for f in ['search', 'find', 'locate']):
+            return ProblemType.SEARCH
+        elif any(f in features for f in ['reasoning', 'logic', 'inference']):
+            return ProblemType.REASONING
+        elif any(f in features for f in ['creative', 'synthesis', 'innovation']):
+            return ProblemType.CREATIVE_SYNTHESIS
+        elif any(f in features for f in ['data_analysis', 'analytics', 'statistics']):
+            return ProblemType.DATA_ANALYSIS
+        elif any(f in features for f in ['simulation', 'modeling', 'simulate']):
+            return ProblemType.SIMULATION
+        else:
+            return ProblemType.REASONING  # Default fallback

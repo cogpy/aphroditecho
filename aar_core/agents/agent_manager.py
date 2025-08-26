@@ -80,6 +80,32 @@ class Agent:
         self.perception_range = 10.0
         self.action_queue = asyncio.Queue()
         
+        # Social cognition capabilities
+        self.cognitive_profile = {
+            'capabilities': {
+                'reasoning': capabilities.reasoning,
+                'multimodal': capabilities.multimodal,
+                'memory_enabled': capabilities.memory_enabled,
+                'learning_enabled': capabilities.learning_enabled,
+                'collaboration': capabilities.collaboration
+            },
+            'specializations': capabilities.specialized_domains,
+            'memory_capacity': getattr(capabilities, 'max_context_length', 4096),
+            'processing_bandwidth': capabilities.processing_power,
+            'sharing_preferences': {
+                'default_sharing_mode': 'broadcast',
+                'trust_threshold': 0.5,
+                'collaboration_willingness': 0.8 if capabilities.collaboration else 0.3
+            }
+        }
+        
+        # Social cognition state
+        self.shared_resources = set()  # Resource IDs this agent has shared
+        self.accessed_resources = set()  # Resource IDs this agent has accessed
+        self.active_collaborations = set()  # Collaboration IDs this agent participates in
+        self.communication_history = []  # Recent communication events
+        self.trust_network = {}  # agent_id -> trust_score mapping
+        
     async def initialize(self) -> None:
         """Initialize the agent."""
         logger.debug(f"Initializing agent {self.id}")
@@ -211,6 +237,106 @@ class Agent:
     def remove_relation(self, other_agent_id: str) -> None:
         """Remove relation to another agent."""
         self.relations.discard(other_agent_id)
+    
+    # Social Cognition Methods
+    
+    async def share_cognitive_resource(self, 
+                                     resource_type: str, 
+                                     data: Dict[str, Any], 
+                                     sharing_mode: str = "broadcast") -> str:
+        """Share a cognitive resource with other agents."""
+        # This would integrate with the SocialCognitionManager
+        # For now, we simulate the sharing
+        resource_id = f"resource_{uuid.uuid4().hex[:8]}"
+        self.shared_resources.add(resource_id)
+        
+        # Update social cognition metrics
+        self.metrics.collaboration_score += 0.1
+        
+        logger.info(f"Agent {self.id} shared {resource_type} resource {resource_id}")
+        return resource_id
+    
+    async def access_shared_resource(self, resource_id: str) -> Optional[Dict[str, Any]]:
+        """Access a shared cognitive resource."""
+        # This would integrate with the SocialCognitionManager
+        # For now, we simulate the access
+        self.accessed_resources.add(resource_id)
+        
+        # Update metrics
+        self.metrics.collaboration_score += 0.05
+        
+        logger.debug(f"Agent {self.id} accessed shared resource {resource_id}")
+        
+        return {
+            'resource_id': resource_id,
+            'access_time': time.time(),
+            'data': {'placeholder': 'simulated_data'}
+        }
+    
+    async def participate_in_collaboration(self, 
+                                         collaboration_id: str, 
+                                         contribution: Dict[str, Any]) -> bool:
+        """Participate in a collaborative problem-solving session."""
+        self.active_collaborations.add(collaboration_id)
+        
+        # Update collaboration metrics
+        self.metrics.collaboration_score += 0.2
+        
+        logger.info(f"Agent {self.id} participating in collaboration {collaboration_id}")
+        return True
+    
+    async def communicate_with_agent(self, 
+                                   target_agent_id: str, 
+                                   message_type: str, 
+                                   content: Dict[str, Any]) -> bool:
+        """Send structured message to another agent."""
+        # This would integrate with CommunicationProtocols
+        # For now, we simulate the communication
+        communication_event = {
+            'timestamp': time.time(),
+            'target_agent': target_agent_id,
+            'message_type': message_type,
+            'content_summary': str(content)[:100]  # First 100 chars
+        }
+        
+        self.communication_history.append(communication_event)
+        
+        # Keep only recent communication history
+        if len(self.communication_history) > 50:
+            self.communication_history = self.communication_history[-50:]
+        
+        # Update trust network
+        if target_agent_id not in self.trust_network:
+            self.trust_network[target_agent_id] = 0.5  # Neutral trust
+        
+        # Successful communication slightly increases trust
+        self.trust_network[target_agent_id] = min(1.0, self.trust_network[target_agent_id] + 0.01)
+        
+        logger.debug(f"Agent {self.id} sent {message_type} message to {target_agent_id}")
+        return True
+    
+    def update_trust_score(self, agent_id: str, interaction_success: bool, impact: float = 0.1) -> None:
+        """Update trust score for another agent based on interaction outcome."""
+        if agent_id not in self.trust_network:
+            self.trust_network[agent_id] = 0.5  # Start with neutral trust
+        
+        if interaction_success:
+            self.trust_network[agent_id] = min(1.0, self.trust_network[agent_id] + impact)
+        else:
+            self.trust_network[agent_id] = max(0.0, self.trust_network[agent_id] - impact * 2)  # Penalize failures more
+    
+    def get_social_cognition_status(self) -> Dict[str, Any]:
+        """Get social cognition status for this agent."""
+        return {
+            'cognitive_profile': self.cognitive_profile,
+            'shared_resources_count': len(self.shared_resources),
+            'accessed_resources_count': len(self.accessed_resources),
+            'active_collaborations_count': len(self.active_collaborations),
+            'communication_events': len(self.communication_history),
+            'trust_network_size': len(self.trust_network),
+            'avg_trust_score': sum(self.trust_network.values()) / max(len(self.trust_network), 1),
+            'collaboration_score': self.metrics.collaboration_score
+        }
     
     def get_status_info(self) -> Dict[str, Any]:
         """Get comprehensive agent status information."""
