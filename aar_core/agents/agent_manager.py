@@ -3,6 +3,8 @@ Agent Manager Component
 
 Manages the lifecycle of AI agents in the AAR orchestration system.
 Provides agent spawning, evolution, termination, and resource management.
+
+Enhanced with advanced performance optimization, load balancing, and monitoring.
 """
 
 import asyncio
@@ -12,6 +14,8 @@ import uuid
 from typing import Dict, List, Any, Optional, Set
 from dataclasses import dataclass, field
 from enum import Enum
+
+from .agent_performance_optimizer import AgentPerformanceOptimizer, OptimizationStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +245,8 @@ class Agent:
 class AgentManager:
     """Manages the lifecycle of AI agents in the AAR system."""
     
-    def __init__(self, max_concurrent_agents: int = 1000):
+    def __init__(self, max_concurrent_agents: int = 1000, 
+                 optimization_strategy: OptimizationStrategy = OptimizationStrategy.PERFORMANCE_BASED):
         self.max_concurrent_agents = max_concurrent_agents
         self.agents: Dict[str, Agent] = {}
         self.agent_pool: Dict[AgentStatus, Set[str]] = {
@@ -265,7 +270,14 @@ class AgentManager:
             'evolution_cycles': 0
         }
         
-        logger.info(f"Agent Manager initialized with capacity: {max_concurrent_agents}")
+        # Advanced performance optimization
+        self.performance_optimizer = AgentPerformanceOptimizer(optimization_strategy)
+        self._optimization_task: Optional[asyncio.Task] = None
+        self._running = True
+        
+        logger.info(f"Agent Manager initialized with capacity: {max_concurrent_agents}, optimization: {optimization_strategy.value}")
+        
+        # Optimization loop will be started when first agent is spawned
     
     async def spawn_agent(self, 
                          capabilities: Optional[AgentCapabilities] = None,
@@ -288,6 +300,13 @@ class AgentManager:
         # Register agent
         self.agents[agent_id] = agent
         self._update_agent_pool(agent_id, agent.status)
+        
+        # Register with performance optimizer
+        self.performance_optimizer.register_agent(agent_id)
+        
+        # Start optimization loop if not already running
+        if not self._optimization_task:
+            self._start_optimization_loop()
         
         # Update statistics
         self.performance_stats['total_spawned'] += 1
@@ -316,6 +335,9 @@ class AgentManager:
         self._remove_from_pools(agent_id)
         del self.agents[agent_id]
         
+        # Unregister from performance optimizer
+        self.performance_optimizer.unregister_agent(agent_id)
+        
         # Update statistics
         self.performance_stats['total_terminated'] += 1
         
@@ -333,18 +355,23 @@ class AgentManager:
     async def allocate_agents(self, 
                              request: Dict[str, Any],
                              count: int = 1) -> List[str]:
-        """Allocate agents for a specific request."""
+        """Allocate agents for a specific request using intelligent optimization."""
         allocated = []
         required_capabilities = request.get('required_capabilities', {})
         
-        # Find suitable existing agents
-        for agent_id, agent in self.agents.items():
-            if len(allocated) >= count:
-                break
-            
-            if (agent.status == AgentStatus.ACTIVE and 
-                self._agent_matches_requirements(agent, required_capabilities)):
-                allocated.append(agent_id)
+        # Get available agents
+        available_agents = [agent_id for agent_id, agent in self.agents.items()
+                          if agent.status == AgentStatus.ACTIVE and 
+                          self._agent_matches_requirements(agent, required_capabilities)]
+        
+        # Use performance optimizer for intelligent selection
+        if available_agents:
+            optimal_agents = self.performance_optimizer.get_optimal_agents(
+                available_agents, 
+                count=min(count, len(available_agents)),
+                capability_requirements=required_capabilities
+            )
+            allocated.extend(optimal_agents)
         
         # Spawn additional agents if needed
         while len(allocated) < count and len(self.agents) < self.max_concurrent_agents:
@@ -352,7 +379,7 @@ class AgentManager:
             new_agent_id = await self.spawn_agent(capabilities, request.get('context'))
             allocated.append(new_agent_id)
         
-        logger.debug(f"Allocated {len(allocated)} agents for request")
+        logger.debug(f"Allocated {len(allocated)} agents for request (optimized)")
         return allocated
     
     def _agent_matches_requirements(self, 
@@ -415,15 +442,31 @@ class AgentManager:
     async def process_agent_request(self, 
                                   agent_id: str, 
                                   request: Dict[str, Any]) -> Dict[str, Any]:
-        """Process request through specific agent."""
+        """Process request through specific agent with performance tracking."""
         if agent_id not in self.agents:
             raise ValueError(f"Agent {agent_id} not found")
         
         agent = self.agents[agent_id]
-        result = await agent.process_request(request)
         
-        self.resource_usage['total_requests'] += 1
-        return result
+        # Track performance
+        start_time = time.time()
+        success = True
+        
+        try:
+            result = await agent.process_request(request)
+            self.resource_usage['total_requests'] += 1
+            return result
+        except Exception as e:
+            success = False
+            logger.error(f"Request failed for agent {agent_id}: {e}")
+            raise
+        finally:
+            # Record performance metrics
+            processing_time = time.time() - start_time
+            resource_usage = self._estimate_agent_resource_usage(agent)
+            self.performance_optimizer.record_performance(
+                agent_id, processing_time, success, resource_usage
+            )
     
     def get_agent_status(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Get status information for specific agent."""
@@ -488,9 +531,71 @@ class AgentManager:
         """Gracefully shutdown all agents."""
         logger.info("Shutting down Agent Manager...")
         
+        # Stop optimization loop
+        self._running = False
+        if self._optimization_task:
+            self._optimization_task.cancel()
+            try:
+                await self._optimization_task
+            except asyncio.CancelledError:
+                pass
+        
         # Terminate all agents
         agent_ids = list(self.agents.keys())
         for agent_id in agent_ids:
             await self.terminate_agent(agent_id)
         
         logger.info(f"Agent Manager shutdown complete. Terminated {len(agent_ids)} agents")
+    
+    def _start_optimization_loop(self) -> None:
+        """Start background optimization task."""
+        async def optimization_loop():
+            while self._running:
+                try:
+                    if self.performance_optimizer.should_optimize():
+                        await self.performance_optimizer.optimize_system(self)
+                    await asyncio.sleep(5.0)  # Check every 5 seconds
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in optimization loop: {e}")
+                    await asyncio.sleep(10.0)  # Longer delay on error
+        
+        self._optimization_task = asyncio.create_task(optimization_loop())
+    
+    def _estimate_agent_resource_usage(self, agent: Agent) -> float:
+        """Estimate current resource usage for an agent."""
+        # Simple heuristic based on agent state and metrics
+        base_usage = 0.1  # Base usage
+        
+        if agent.status == AgentStatus.BUSY:
+            base_usage += 0.3
+        
+        # Factor in processing power
+        base_usage += (agent.capabilities.processing_power - 1.0) * 0.2
+        
+        # Factor in recent activity
+        time_since_activity = time.time() - agent.metrics.last_activity
+        if time_since_activity < 60:  # Active in last minute
+            base_usage += 0.2
+        
+        return min(1.0, base_usage)  # Cap at 100%
+    
+    def get_performance_report(self) -> Dict[str, Any]:
+        """Get comprehensive performance report including optimization metrics."""
+        basic_stats = self.get_system_stats()
+        optimization_report = self.performance_optimizer.get_performance_report()
+        
+        return {
+            **basic_stats,
+            'optimization': optimization_report,
+            'timestamp': time.time()
+        }
+    
+    def get_optimization_suggestions(self) -> List[Dict[str, Any]]:
+        """Get current optimization suggestions."""
+        return self.performance_optimizer.suggest_optimizations()
+    
+    async def trigger_system_optimization(self) -> Dict[str, Any]:
+        """Manually trigger system optimization."""
+        return await self.performance_optimizer.optimize_system(self)
