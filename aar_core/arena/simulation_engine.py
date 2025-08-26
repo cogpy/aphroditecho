@@ -546,6 +546,11 @@ class Arena:
     
     def _apply_agent_physics(self, agent: Dict[str, Any], dt: float) -> None:
         """Apply physics to an agent."""
+        # Apply gravity
+        if self.config.physics and self.config.physics.gravity:
+            gravity_acceleration = np.array(self.config.physics.gravity)
+            agent['velocity'] += gravity_acceleration * dt
+        
         # Apply air resistance
         if self.config.physics.air_resistance > 0:
             agent['velocity'] *= (1.0 - self.config.physics.air_resistance * dt)
