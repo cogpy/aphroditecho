@@ -26,7 +26,7 @@ from enum import Enum
 # Import existing DTESN components
 try:
     from oeis_a000081_enumerator import OEIS_A000081_Enumerator
-    from bseries_tree_classifier import BSeriesTreeClassifier, TreeType
+    from bseries_tree_classifier import BSeriesTreeClassifier, TreeStructureType
     from memory_layout_validator import MemoryRegionType, DTESNMemoryValidator
     DTESN_COMPONENTS_AVAILABLE = True
 except ImportError as e:
