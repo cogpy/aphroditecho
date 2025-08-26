@@ -194,7 +194,7 @@ class DTESNBridge:
             self.reservoir.update_state(reservoir_input)
             
             # Get current reservoir state
-            hidden_state = self.reservoir.get_state()
+            hidden_state = self.reservoir.reservoir_state
             
             return {
                 'hidden_state': hidden_state.tolist() if hasattr(hidden_state, 'tolist') else list(hidden_state),
@@ -219,11 +219,11 @@ class DTESNBridge:
             # Create simple differential function for testing
             from bseries_differential_calculator import DifferentialFunction
             
-            # Simple test function f(y) = y
-            def test_function(y):
-                return y
+            # Simple test function f(y) = y and f'(y) = 1
+            test_function = lambda y: y
+            test_derivative = lambda y: 1.0
             
-            df = DifferentialFunction("test", test_function, 1)
+            df = DifferentialFunction(test_function, test_derivative, name="test")
             
             # Use tree_id=1 (single node) and sample y value
             y_val = float(np.mean(individual.genome))
