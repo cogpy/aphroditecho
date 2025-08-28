@@ -14,7 +14,19 @@ from pathlib import Path
 import hashlib
 import time
 
-from echo.sys.prompt_kernel import PromptStore
+try:
+    import sys
+    from pathlib import Path
+    echo_sys_path = Path(__file__).parent.parent.parent / "echo.sys"
+    if str(echo_sys_path) not in sys.path:
+        sys.path.insert(0, str(echo_sys_path))
+    from prompt_kernel.prompt_store import PromptStore
+except ImportError:
+    class PromptStore:
+        def __init__(self):
+            self.prompts = {}
+        def get_prompt(self, name): return None
+        def list_prompts(self): return []
 
 logger = logging.getLogger(__name__)
 

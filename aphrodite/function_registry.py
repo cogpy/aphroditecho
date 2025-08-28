@@ -452,27 +452,214 @@ class FunctionRegistry:
         imported_functions = []
         
         try:
-            # This would parse argc schema files and convert to function specs
-            # For now, return placeholder
-            logger.info(f"Importing argc schema from {schema_path}")
+            if not schema_path.exists():
+                logger.error(f"Schema file not found: {schema_path}")
+                return imported_functions
+            
+            with open(schema_path, 'r') as f:
+                content = f.read()
+            
+            import re
+            
+            command_pattern = r'^(\w+)\(\)\s*\{'
+            commands = re.findall(command_pattern, content, re.MULTILINE)
+            
+            for command_name in commands:
+                func_spec = self._parse_argc_command(content, command_name)
+                if func_spec:
+                    async def argc_impl(**kwargs):
+                        return await self._execute_argc_command(schema_path, command_name, kwargs)
+                    
+                    if self.register_function(func_spec, argc_impl):
+                        self.activate_function(func_spec.name)
+                        imported_functions.append(func_spec.name)
+                        logger.info(f"Imported argc function: {func_spec.name}")
+            
+            logger.info(f"Successfully imported {len(imported_functions)} argc functions from {schema_path}")
             return imported_functions
             
         except Exception as e:
             logger.error(f"Failed to import argc schema: {e}")
-            return []
+            return imported_functions
 
     def import_llm_functions(self, module_path: str) -> List[str]:
         """Import functions from llm-functions modules."""
         imported_functions = []
         
         try:
-            # This would dynamically import from llm-functions modules
-            logger.info(f"Importing llm-functions from {module_path}")
+            import importlib.util
+            import sys
+            
+            spec = importlib.util.spec_from_file_location("llm_module", module_path)
+            if spec is None or spec.loader is None:
+                logger.error(f"Could not load module spec from {module_path}")
+                return imported_functions
+            
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["llm_module"] = module
+            spec.loader.exec_module(module)
+            
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                
+                if callable(attr) and not attr_name.startswith('_'):
+                    if hasattr(attr, '__llm_function__') or hasattr(attr, '__doc__'):
+                        func_spec = self._create_function_spec_from_callable(attr, attr_name)
+                        if func_spec:
+                            if self.register_function(func_spec, attr):
+                                self.activate_function(func_spec.name)
+                                imported_functions.append(func_spec.name)
+                                logger.info(f"Imported llm function: {func_spec.name}")
+            
+            logger.info(f"Successfully imported {len(imported_functions)} llm functions from {module_path}")
             return imported_functions
             
         except Exception as e:
             logger.error(f"Failed to import llm-functions: {e}")
-            return []
+            return imported_functions
+
+    def _parse_argc_command(self, content: str, command_name: str) -> Optional[FunctionSpec]:
+        """Parse argc command definition to create function spec."""
+        try:
+            import re
+            
+            pattern = rf'((?:#.*\n)*){command_name}\(\)\s*\{{'
+            match = re.search(pattern, content, re.MULTILINE)
+            
+            if not match:
+                return None
+            
+            comments = match.group(1)
+            
+            description = ""
+            parameters = {}
+            
+            for line in comments.split('\n'):
+                line = line.strip()
+                if line.startswith('# @describe'):
+                    description = line.replace('# @describe', '').strip()
+                elif line.startswith('# @arg'):
+                    parts = line.replace('# @arg', '').strip().split(None, 1)
+                    if parts:
+                        arg_name = parts[0].rstrip('!')
+                        required = parts[0].endswith('!')
+                        arg_desc = parts[1] if len(parts) > 1 else f"Argument: {arg_name}"
+                        
+                        parameters[arg_name] = ParameterSpec(
+                            type="string",
+                            description=arg_desc,
+                            required=required
+                        )
+                elif line.startswith('# @flag'):
+                    parts = line.replace('# @flag', '').strip().split(None, 2)
+                    if len(parts) >= 2:
+                        flag_name = parts[1].lstrip('-') if parts[1].startswith('--') else parts[0].lstrip('-')
+                        flag_desc = parts[2] if len(parts) > 2 else f"Flag: {flag_name}"
+                        
+                        parameters[flag_name] = ParameterSpec(
+                            type="boolean",
+                            description=flag_desc,
+                            required=False,
+                            default=False
+                        )
+            
+            return FunctionSpec(
+                name=f"argc_{command_name}",
+                description=description or f"Argc command: {command_name}",
+                parameters=parameters,
+                safety_class=SafetyClass.MEDIUM,
+                cost_unit=0.5,
+                implementation_ref=f"argc.{command_name}",
+                tags=["argc", "cli"]
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to parse argc command {command_name}: {e}")
+            return None
+
+    def _create_function_spec_from_callable(self, func: Callable, name: str) -> Optional[FunctionSpec]:
+        """Create function spec from a callable with introspection."""
+        try:
+            sig = inspect.signature(func)
+            parameters = {}
+            
+            for param_name, param in sig.parameters.items():
+                param_type = "string"
+                if param.annotation != inspect.Parameter.empty:
+                    if param.annotation == int:
+                        param_type = "integer"
+                    elif param.annotation == float:
+                        param_type = "number"
+                    elif param.annotation == bool:
+                        param_type = "boolean"
+                    elif hasattr(param.annotation, '__origin__'):
+                        if param.annotation.__origin__ == list:
+                            param_type = "array"
+                
+                required = param.default == inspect.Parameter.empty
+                default_val = None if required else param.default
+                
+                parameters[param_name] = ParameterSpec(
+                    type=param_type,
+                    description=f"Parameter: {param_name}",
+                    required=required,
+                    default=default_val
+                )
+            
+            description = func.__doc__ or f"LLM function: {name}"
+            
+            return FunctionSpec(
+                name=f"llm_{name}",
+                description=description.strip(),
+                parameters=parameters,
+                safety_class=SafetyClass.MEDIUM,
+                cost_unit=1.0,
+                implementation_ref=f"llm.{name}",
+                tags=["llm", "dynamic"]
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to create function spec for {name}: {e}")
+            return None
+
+    async def _execute_argc_command(self, schema_path: Path, command_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute argc command with provided arguments."""
+        try:
+            import subprocess
+            import asyncio
+            
+            cmd = ["bash", str(schema_path), command_name]
+            
+            for key, value in arguments.items():
+                if isinstance(value, bool) and value:
+                    cmd.append(f"--{key}")
+                elif not isinstance(value, bool):
+                    cmd.extend([f"--{key}", str(value)])
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            return {
+                "success": process.returncode == 0,
+                "stdout": stdout.decode().strip(),
+                "stderr": stderr.decode().strip(),
+                "exit_code": process.returncode,
+                "command": command_name,
+                "arguments": arguments
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "command": command_name,
+                "arguments": arguments
+            }
 
     def export_openai_tools_format(self) -> List[Dict[str, Any]]:
         """Export functions in OpenAI tools format."""

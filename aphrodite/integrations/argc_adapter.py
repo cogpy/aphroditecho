@@ -113,6 +113,8 @@ class ArgcAdapter:
         """Initialize argc and test functionality."""
         try:
             # Test if argc is working
+            if self.argc_binary is None:
+                raise RuntimeError("Argc binary path is None")
             result = subprocess.run(
                 [self.argc_binary, "--version"],
                 capture_output=True,
@@ -143,31 +145,66 @@ class ArgcAdapter:
                     logger.warning(f"Failed to parse example {script_file}: {e}")
 
     def _setup_compatibility_mode(self):
-        """Setup compatibility mode with basic command schemas."""
+        """Setup production mode with robust argc binary management."""
         self.available = False
         
-        # Create basic command examples for compatibility
-        demo_command = ArgcCommand(
-            name="demo",
-            description="Demo command for argc compatibility",
-            args=[
-                {"name": "input", "required": True, "description": "Input parameter"}
-            ],
-            flags=[
-                {"name": "verbose", "short": "v", "description": "Enable verbose output"}
-            ],
-            options=[
-                {"name": "output", "short": "o", "description": "Output file", "type": "string"}
-            ],
-            metadata={"compatibility_mode": True}
-        )
+        logger.error("Argc binary not found. Attempting automatic installation...")
         
-        self.commands["demo"] = demo_command
-        
-        # Register with function registry
-        self._register_command_as_function("demo", demo_command)
-        
-        logger.info("Argc adapter running in compatibility mode")
+        if self._install_argc_binary():
+            self._initialize_argc()
+        else:
+            raise RuntimeError(
+                "Argc binary is required for production operation. "
+                "Please install argc manually or ensure it's available in PATH. "
+                "See installation instructions at: https://github.com/sigoden/argc"
+            )
+
+    def _install_argc_binary(self) -> bool:
+        """Attempt to install argc binary automatically."""
+        try:
+            import subprocess
+            import platform
+            
+            system = platform.system().lower()
+            
+            if system == "linux":
+                result = subprocess.run(
+                    ["cargo", "install", "argc"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                
+                if result.returncode == 0:
+                    import os
+                    cargo_bin = os.path.expanduser("~/.cargo/bin/argc")
+                    if os.path.exists(cargo_bin):
+                        self.argc_binary = cargo_bin
+                        logger.info(f"Successfully installed argc at {cargo_bin}")
+                        return True
+            
+            argc_src = Path(__file__).parent.parent.parent / "2do" / "argc"
+            if argc_src.exists():
+                result = subprocess.run(
+                    ["cargo", "build", "--release"],
+                    cwd=argc_src,
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                
+                if result.returncode == 0:
+                    binary_path = argc_src / "target" / "release" / "argc"
+                    if binary_path.exists():
+                        self.argc_binary = str(binary_path)
+                        logger.info(f"Successfully built argc at {binary_path}")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to install argc binary: {e}")
+            return False
 
     def parse_argc_script(self, script_path: Path) -> Optional[ArgcSchema]:
         """Parse an argc script and extract command definitions."""
@@ -347,10 +384,10 @@ class ArgcAdapter:
             arg_name = parts[0]
             if arg_name.endswith('!'):
                 arg_info["name"] = arg_name[:-1]
-                arg_info["required"] = True
+                arg_info["required"] = "true"
             else:
                 arg_info["name"] = arg_name
-                arg_info["required"] = False
+                arg_info["required"] = "false"
             
             # Description
             if len(parts) > 1:
@@ -430,13 +467,10 @@ class ArgcAdapter:
             return {"error": f"Command {command_name} not found"}
         
         if not self.available:
-            # Compatibility mode
-            return {
-                "result": f"[Argc Compatibility] Executed {command.name}",
-                "arguments": arguments,
-                "command": command.name,
-                "compatibility_mode": True
-            }
+            raise RuntimeError(
+                f"Argc binary not available. Command {command_name} cannot be executed. "
+                "Please ensure argc is properly installed and initialized."
+            )
         
         try:
             # Build argc command line
@@ -533,14 +567,10 @@ class ArgcAdapter:
     def parse_command_string(self, command_string: str) -> Optional[Dict[str, Any]]:
         """Parse a command string and extract structured data."""
         if not self.available:
-            # Basic parsing for compatibility mode
-            parts = command_string.strip().split()
-            return {
-                "command": parts[0] if parts else "",
-                "args": parts[1:] if len(parts) > 1 else [],
-                "parsed": True,
-                "compatibility_mode": True
-            }
+            raise RuntimeError(
+                "Argc binary not available. Cannot parse command string. "
+                "Please ensure argc is properly installed and initialized."
+            )
         
         try:
             # Use argc to parse command string
@@ -557,6 +587,8 @@ eval "$(argc --argc-eval "$0" "$@")"
                 temp_script = f.name
             
             # Execute parsing
+            if self.argc_binary is None:
+                raise RuntimeError("Argc binary path is None")
             result = subprocess.run(
                 [self.argc_binary, temp_script, "parse_cmd", command_string],
                 capture_output=True,
