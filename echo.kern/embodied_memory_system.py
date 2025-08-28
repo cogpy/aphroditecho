@@ -43,6 +43,22 @@ try:
     HAS_ECHO_INTEGRATION = True
 except ImportError:
     HAS_ECHO_INTEGRATION = False
+    # Define fallback MemoryType enum
+    class MemoryType(Enum):
+        EPISODIC = "episodic"
+        SEMANTIC = "semantic"
+        PROCEDURAL = "procedural"
+        EMOTIONAL = "emotional"
+    
+    # Define fallback classes
+    class MemoryNode:
+        pass
+    
+    class HypergraphMemory:
+        pass
+    
+    class DreamMemoryNode:
+        pass
 
 # Configure logging
 logger = logging.getLogger(__name__)
