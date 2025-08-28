@@ -59,9 +59,9 @@ class EmbodiedAgent:
         self.embodiment_initialized = True
         self.last_update_time = 0.0
         
-        # Motor control system
+        # Motor control system  
         self.motor_commands = {}  # Joint torque commands
-        self.motor_controller_gains = {'kp': 10.0, 'kd': 1.0, 'ki': 0.1}
+        self.motor_controller_gains = {'kp': 8.0, 'kd': 2.0, 'ki': 0.1}  # More conservative gains
         self.motor_errors = {}  # PID error tracking
         
         # Sensory integration
@@ -147,6 +147,9 @@ class EmbodiedAgent:
                 # Compute PID terms
                 proportional = error
                 error_data['integral'] += error * dt
+                # Limit integral windup
+                max_integral = 5.0
+                error_data['integral'] = np.clip(error_data['integral'], -max_integral, max_integral)
                 error_data['derivative'] = (error - error_data['previous_error']) / dt
                 
                 # Calculate control torque
@@ -157,6 +160,10 @@ class EmbodiedAgent:
                 control_torque = (kp * proportional + 
                                 ki * error_data['integral'] + 
                                 kd * error_data['derivative'])
+                
+                # Limit control torque to prevent instability
+                max_torque = 50.0
+                control_torque = np.clip(control_torque, -max_torque, max_torque)
                 
                 # Add motor noise
                 if self.config.motor_noise_level > 0:
