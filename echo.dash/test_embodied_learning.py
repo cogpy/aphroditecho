@@ -172,8 +172,7 @@ class TestBodySchemaLearner(unittest.TestCase):
             motor_action=motor_action,
             resulting_body_state=resulting_state,
             sensory_feedback={'touch': 'contact'},
-            sensory_feedback={},
-                success=True
+            success=True
         )
         
         initial_experiences = len(learner.experiences)

@@ -9,23 +9,7 @@ import json
 import time
 import requests
 import subprocess
-from         print("✅ Personal Developer Studio setup complete!")
-        print(f"📁 Configuration saved to: {self.config_file}")
-        print("\n📋 Next Steps:")
-        print("1. Install Lightning CLI: pip install lightning")
-        print("2. Login to your PERSONAL account: lightning login")
-        print("3. Deploy: lightning run app ./deploy_personal_studio.sh")
-        print("\n💰 Cost Optimization Features:")
-        print("- Auto-shutdown after 30 minutes idle")
-        print("- Conservative resource limits")
-        print("- Budget monitoring and alerts")
-        print("- gpu-rtx compute for cost efficiency")
-        
-        return {
-            "env_file": env_file,
-            "deploy_script": deploy_script,
-            "config_file": config_file
-        }atetime
+from datetime import datetime
 from pathlib import Path
 
 class PersonalStudioManager:

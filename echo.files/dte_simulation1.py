@@ -741,8 +741,7 @@ class DTESimulation(RecursionEngine):
             self.transitions.append((self.current_state, insight_name))
 
             # Connect to a random other state
-            other_state = random.choice([s for s in self.states if s != insight_name and s```python
- != self.current_state])
+            other_state = random.choice([s for s in self.states if s != insight_name and s != self.current_state])
             self.G.add_edge(insight_name, other_state)
             self.transitions.append((insight_name, other_state))
 
@@ -1486,4 +1485,4 @@ class FractalRecursion(RecursionEngine):
         # Create initial transitions
         self.transitions = []
         for i in range(self.depth - 1):
-            self.transitions.append((f"
+            self.transitions.append((f"state_{i}", f"state_{i+1}"))
