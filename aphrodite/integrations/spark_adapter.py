@@ -17,7 +17,6 @@ import time
 
 try:
     import sys
-    from pathlib import Path
     echo_sys_path = Path(__file__).parent.parent.parent / "echo.sys"
     if str(echo_sys_path) not in sys.path:
         sys.path.insert(0, str(echo_sys_path))
