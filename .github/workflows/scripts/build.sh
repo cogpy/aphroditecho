@@ -25,8 +25,8 @@ $python_executable -m pip install --upgrade pip wheel setuptools packaging
 $python_executable -m pip install -r requirements/cuda.txt
 
 # Limit the number of parallel jobs to avoid OOM and disk space issues
-export MAX_JOBS=1
-export NVCC_THREADS=1
+export MAX_JOBS=${MAX_JOBS:-1}
+export NVCC_THREADS=${NVCC_THREADS:-1}
 
 export TORCH_CUDA_ARCH_LIST="8.0"
 
