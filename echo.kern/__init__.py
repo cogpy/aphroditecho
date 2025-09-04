@@ -63,6 +63,63 @@ except ImportError as e:
     logger.debug(f"Note: ESN reservoir uses local imports: {e}")
     class ESNReservoir: pass
 
+# Multi-agent training system imports
+try:
+    from .multi_agent_training_system import (
+        MultiAgentTrainingSystem,
+        TrainingConfiguration,
+        TrainingMode,
+        LearningStrategy,
+        AgentPopulationMember
+    )
+    logger.debug("✓ Multi-agent training system imported successfully")
+except ImportError as e:
+    logger.debug(f"Note: Multi-agent training system not available: {e}")
+    class MultiAgentTrainingSystem: pass
+    class TrainingConfiguration: pass
+    class TrainingMode: pass
+    class LearningStrategy: pass
+    class AgentPopulationMember: pass
+
+try:
+    from .population_based_training import (
+        PopulationBasedTrainer,
+        PopulationConfig,
+        PopulationAlgorithm
+    )
+    logger.debug("✓ Population-based training imported successfully")
+except ImportError as e:
+    logger.debug(f"Note: Population-based training not available: {e}")
+    class PopulationBasedTrainer: pass
+    class PopulationConfig: pass
+    class PopulationAlgorithm: pass
+
+try:
+    from .cooperative_competitive_learning import (
+        HybridLearningCoordinator,
+        LearningConfiguration,
+        CooperativeLearningEngine,
+        CompetitiveLearningEngine
+    )
+    logger.debug("✓ Cooperative/competitive learning imported successfully")
+except ImportError as e:
+    logger.debug(f"Note: Cooperative/competitive learning not available: {e}")
+    class HybridLearningCoordinator: pass
+    class LearningConfiguration: pass
+    class CooperativeLearningEngine: pass
+    class CompetitiveLearningEngine: pass
+
+try:
+    from .dtesn_multi_agent_training_integration import (
+        DTESNMultiAgentTrainingSystem,
+        DTESNTrainingConfiguration
+    )
+    logger.debug("✓ DTESN multi-agent training integration imported successfully")
+except ImportError as e:
+    logger.debug(f"Note: DTESN multi-agent training integration not available: {e}")
+    class DTESNMultiAgentTrainingSystem: pass
+    class DTESNTrainingConfiguration: pass
+
 # Memory Wall functionality
 def load_memory_wall_content():
     """
@@ -159,6 +216,20 @@ __all__ = [
     'create_embodied_memory_bridge',
     'PSystemMembranes',
     'ESNReservoir',
+    'MultiAgentTrainingSystem',
+    'TrainingConfiguration', 
+    'TrainingMode',
+    'LearningStrategy',
+    'AgentPopulationMember',
+    'PopulationBasedTrainer',
+    'PopulationConfig',
+    'PopulationAlgorithm',
+    'HybridLearningCoordinator',
+    'LearningConfiguration',
+    'CooperativeLearningEngine',
+    'CompetitiveLearningEngine',
+    'DTESNMultiAgentTrainingSystem',
+    'DTESNTrainingConfiguration',
     'load_memory_wall_content',
     'extract_deep_tree_echo_message',
     'get_echo_identity_framework'
