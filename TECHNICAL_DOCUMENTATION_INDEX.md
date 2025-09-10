@@ -134,6 +134,7 @@ graph TB
 - **[Contributing Guidelines](CONTRIBUTING.md)** - Development workflow and standards
 - **[Development Workflow](README.md#development-workflow--contribution-guide)** - Step-by-step development process
 - **[Testing Framework](README.md#testing-framework)** - Comprehensive testing approach
+- **SSR Expert Role** — Server-side rendering responsibilities, limitations, and code requirements (wiki/docs/ssr-expert-role.md)
 
 ### 🚀 Deployment & Operations
 - **[Deployment Guide](DEPLOYMENT.md)** - Production deployment instructions

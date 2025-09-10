@@ -1,3 +1,6 @@
+# Documentation Index
+
+- SSR Expert Role — Server-side rendering only scope and guidelines (see [ssr-expert-role.md](./ssr-expert-role.md))
 
 # Deep Tree Echo Cognitive Architecture Wiki
 
