@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, List
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from aphrodite.endpoints.deep_tree_echo.config import DTESNConfig
 from aphrodite.engine.async_aphrodite import AsyncAphrodite
@@ -22,14 +22,16 @@ from aphrodite.engine.async_aphrodite import AsyncAphrodite
 logger = logging.getLogger(__name__)
 
 # Add echo.kern to path for component imports
-echo_kern_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'echo.kern')
+echo_kern_path = os.path.join(
+    os.path.dirname(__file__), '..', '..', '..', '..', 'echo.kern'
+)
 if echo_kern_path not in sys.path:
     sys.path.insert(0, echo_kern_path)
 
 # Import DTESN components from echo.kern
 try:
-    from dtesn_integration import DTESNConfiguration, DTESNIntegrationMode
-    from esn_reservoir import ESNReservoir, ESNConfiguration, ReservoirState
+    from dtesn_integration import DTESNConfiguration
+    from esn_reservoir import ESNReservoir, ESNConfiguration
     from psystem_membranes import PSystemMembraneHierarchy, MembraneType
     from bseries_tree_classifier import BSeriesTreeClassifier
     from oeis_a000081_enumerator import OEIS_A000081_Enumerator
@@ -97,7 +99,9 @@ class DTESNProcessor:
         
         # Initialize concurrent processing resources
         self._processing_semaphore = asyncio.Semaphore(max_concurrent_processes)
-        self._thread_pool = ThreadPoolExecutor(max_workers=max_concurrent_processes)
+        self._thread_pool = ThreadPoolExecutor(
+            max_workers=max_concurrent_processes
+        )
         self._processing_stats = {
             "total_requests": 0,
             "concurrent_requests": 0,
@@ -108,7 +112,10 @@ class DTESNProcessor:
         # Initialize DTESN components
         self._initialize_dtesn_components()
         
-        logger.info(f"Enhanced DTESN processor initialized successfully with {max_concurrent_processes} max concurrent processes")
+        logger.info(
+            f"Enhanced DTESN processor initialized successfully with "
+            f"{max_concurrent_processes} max concurrent processes"
+        )
     
     def _initialize_dtesn_components(self):
         """Initialize DTESN processing components."""
@@ -118,7 +125,10 @@ class DTESNProcessor:
                 logger.info("Real DTESN components initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize real DTESN components: {e}")
-                raise RuntimeError(f"DTESN processor requires functional echo.kern components: {e}")
+                raise RuntimeError(
+                    f"DTESN processor requires functional echo.kern "
+                    f"components: {e}"
+                ) from e
         else:
             raise RuntimeError(
                 "DTESN processor requires echo.kern components to be available. "
@@ -169,7 +179,8 @@ class DTESNProcessor:
         enable_concurrent: bool = True
     ) -> DTESNResult:
         """
-        Process input through DTESN system with enhanced concurrent processing and engine integration.
+        Process input through DTESN system with enhanced concurrent processing
+        and engine integration.
         
         Args:
             input_data: Input string to process
@@ -178,7 +189,8 @@ class DTESNProcessor:
             enable_concurrent: Enable concurrent processing optimizations
             
         Returns:
-            DTESN processing result with enhanced engine data and concurrency metrics
+            DTESN processing result with enhanced engine data and 
+            concurrency metrics
         """
         async with self._processing_semaphore:
             self._processing_stats["total_requests"] += 1
@@ -195,9 +207,13 @@ class DTESNProcessor:
                 
                 # Process using enhanced concurrent DTESN processing
                 if enable_concurrent:
-                    result = await self._process_concurrent_dtesn(input_data, depth, size, engine_context)
+                    result = await self._process_concurrent_dtesn(
+                        input_data, depth, size, engine_context
+                    )
                 else:
-                    result = await self._process_real_dtesn(input_data, depth, size, engine_context)
+                    result = await self._process_real_dtesn(
+                        input_data, depth, size, engine_context
+                    )
                     
                 processing_time = (time.time() - start_time) * 1000
                 result.processing_time_ms = processing_time
@@ -488,9 +504,12 @@ class DTESNProcessor:
         
         # Add engine-specific enhancements
         if engine_context.get("engine_available"):
+            processing_enhancements = engine_context.get("processing_enhancements", {})
+            model_config = engine_context.get("model_config", {})
+            
             membrane_output["engine_enhancements"] = {
-                "tokenization_support": engine_context.get("processing_enhancements", {}).get("tokenization_available", False),
-                "model_context": engine_context.get("model_config", {}).get("model_name", "unknown")
+                "tokenization_support": processing_enhancements.get("tokenization_available", False),
+                "model_context": model_config.get("model_name", "unknown")
             }
         
         return membrane_output
@@ -528,17 +547,24 @@ class DTESNProcessor:
                 
                 # Add engine-specific enhancements
                 if engine_context.get("engine_available"):
+                    processing_enhancements = engine_context.get("processing_enhancements", {})
+                    model_config = engine_context.get("model_config", {})
+                    
                     esn_output["engine_enhancements"] = {
-                        "generation_support": engine_context.get("processing_enhancements", {}).get("generation_available", False),
-                        "model_dtype": engine_context.get("model_config", {}).get("dtype", "unknown"),
+                        "generation_support": processing_enhancements.get("generation_available", False),
+                        "model_dtype": model_config.get("dtype", "unknown"),
                         "integration_level": "advanced"
                     }
                     
             except Exception as e:
                 logger.error(f"ESN processing failed: {e}")
-                raise RuntimeError(f"ESN processing failed with real components: {e}")
+                raise RuntimeError(
+                    f"ESN processing failed with real components: {e}"
+                ) from e
         else:
-            raise RuntimeError("ESN reservoir does not have required 'evolve_state' method")
+            raise RuntimeError(
+                "ESN reservoir does not have required 'evolve_state' method"
+            )
         
         return esn_output
     
@@ -589,7 +615,7 @@ class DTESNProcessor:
                 }
             except Exception as e:
                 logger.error(f"Failed to get ESN state: {e}")
-                raise RuntimeError(f"ESN state retrieval failed: {e}")
+                raise RuntimeError(f"ESN state retrieval failed: {e}") from e
         
         return {
             "type": "echo_state_network",
