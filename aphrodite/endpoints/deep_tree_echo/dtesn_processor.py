@@ -161,7 +161,7 @@ class DTESNProcessor:
             f"Enhanced DTESN processor initialized with engine integration "
             f"and {max_concurrent_processes} max concurrent processes"
         )
-
+    
     def _initialize_dtesn_components(self):
         """Initialize DTESN processing components."""
         if ECHO_KERN_AVAILABLE:
@@ -441,7 +441,6 @@ class DTESNProcessor:
                 return min(8, self.config.max_membrane_depth + 2)
             elif max_len > 4096:
                 return min(6, self.config.max_membrane_depth + 1)
-
         return self.config.max_membrane_depth
 
     def _get_optimal_esn_size(self) -> int:
@@ -490,7 +489,26 @@ class DTESNProcessor:
 
         try:
             context["engine_available"] = True
-
+            
+            # Fetch all available engine configurations
+#            config_fetchers = [
+#                ("model_config", "get_model_config"),
+#                ("aphrodite_config", "get_aphrodite_config"), 
+#                ("parallel_config", "get_parallel_config"),
+#                ("scheduler_config", "get_scheduler_config"),
+#                ("decoding_config", "get_decoding_config"),
+#                ("lora_config", "get_lora_config")
+#            ]
+            
+#            for config_name, method_name in config_fetchers:
+#                if hasattr(self.engine, method_name):
+#                    try:
+#                        config_obj = await getattr(self.engine, method_name)()
+#                        context[config_name] = self._serialize_config(config_obj)
+#                    except Exception as e:
+#                        logger.debug(f"Could not fetch {config_name}: {e}")
+#                        context[config_name] = {"error": str(e)}
+            
             # Include all cached configurations
             context["model_config"] = self._serialize_config(self.model_config)
             context["aphrodite_config"] = self._serialize_config(
@@ -518,36 +536,32 @@ class DTESNProcessor:
                 "last_sync": self.last_engine_sync,
                 "engine_ready": self.engine_ready,
             }
-
+            
             # Enhanced processing capabilities
             context["processing_enhancements"] = {
-                "tokenization_available": hasattr(self.engine, "get_tokenizer"),
-                "generation_available": hasattr(self.engine, "generate"),
-                "encoding_available": hasattr(self.engine, "encode"),
-                "model_info_available": hasattr(
-                    self.engine, "get_model_config"
-                ),
-                "health_monitoring": hasattr(self.engine, "check_health"),
+                "tokenization_available": hasattr(self.engine, 'get_tokenizer'),
+                "generation_available": hasattr(self.engine, 'generate'),
+                "encoding_available": hasattr(self.engine, 'encode'),
+                "model_info_available": hasattr(self.engine, 'get_model_config'),
+                "health_monitoring": hasattr(self.engine, 'check_health'),
                 "comprehensive_integration": True,
-                "backend_pipeline_ready": self.engine_ready,
+                "backend_pipeline_ready": self.engine_ready
             }
-
+            
             # Performance and backend integration metrics
-            context[
-                "performance_metrics"
-            ] = await self._gather_performance_metrics()
+            context["performance_metrics"] = await self._gather_performance_metrics()
             context["backend_integration"] = {
                 "pipeline_configured": self.engine_ready,
                 "model_management_active": self.model_config is not None,
                 "configuration_synchronized": self.last_engine_sync > 0,
-                "error_handling_active": True,
+                "error_handling_active": True
             }
-
+                
         except Exception as e:
             logger.warning(f"Comprehensive engine context fetch error: {e}")
             context["engine_available"] = False
             context["error"] = str(e)
-
+        
         return context
 
     def _serialize_config(self, config_obj) -> Dict[str, Any]:
@@ -1157,3 +1171,4 @@ class DTESNProcessor:
         if hasattr(self, "_thread_pool"):
             self._thread_pool.shutdown(wait=True)
             logger.info("DTESN processor thread pool shut down successfully")
+
