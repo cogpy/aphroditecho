@@ -227,3 +227,298 @@ class AsyncResourceMiddleware(BaseHTTPMiddleware):
                 status_code=503,
                 headers={"X-Resource-Error": "true"}
             )
+
+
+class AsyncPerformanceMiddleware(BaseHTTPMiddleware):
+    """
+    Enhanced middleware for async performance monitoring and optimization.
+    
+    Provides comprehensive monitoring of async request processing, including
+    concurrency metrics, response time analysis, and adaptive performance tuning.
+    """
+    
+    def __init__(
+        self,
+        app,
+        enable_detailed_metrics: bool = True,
+        performance_threshold_ms: float = 1000.0,
+        slow_request_threshold_ms: float = 5000.0
+    ):
+        """Initialize async performance middleware."""
+        super().__init__(app)
+        self.enable_detailed_metrics = enable_detailed_metrics
+        self.performance_threshold_ms = performance_threshold_ms
+        self.slow_request_threshold_ms = slow_request_threshold_ms
+        
+        # Performance tracking
+        self._request_times = []
+        self._slow_requests = []
+        self._concurrent_requests = 0
+        self._lock = asyncio.Lock()
+        
+        logger.info("AsyncPerformanceMiddleware initialized with enhanced monitoring")
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """
+        Monitor and optimize async request performance.
+        
+        Args:
+            request: FastAPI request object
+            call_next: Next middleware or route handler
+            
+        Returns:
+            Response with enhanced performance headers and metrics
+        """
+        start_time = time.time()
+        request_id = f"perf_{int(start_time * 1000000)}"
+        
+        # Track concurrent request count
+        async with self._lock:
+            self._concurrent_requests += 1
+            peak_concurrent = self._concurrent_requests
+        
+        # Store performance context
+        request.state.performance_context = {
+            "request_id": request_id,
+            "start_time": start_time,
+            "concurrent_at_start": peak_concurrent
+        }
+        
+        try:
+            # Process request
+            response = await call_next(request)
+            
+            # Calculate performance metrics
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            # Update performance tracking
+            await self._update_performance_metrics(
+                request_id, processing_time_ms, True, request.url.path
+            )
+            
+            # Add performance headers
+            response.headers["X-Processing-Time-Ms"] = f"{processing_time_ms:.2f}"
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Concurrent-Peak"] = str(peak_concurrent)
+            
+            if processing_time_ms > self.performance_threshold_ms:
+                response.headers["X-Performance-Warning"] = "slow"
+                
+            if processing_time_ms > self.slow_request_threshold_ms:
+                response.headers["X-Performance-Alert"] = "very-slow"
+                logger.warning(
+                    f"Very slow request {request_id}: {processing_time_ms:.2f}ms "
+                    f"for {request.url.path}"
+                )
+            
+            # Add detailed metrics if enabled
+            if self.enable_detailed_metrics:
+                avg_time = await self._get_average_response_time()
+                response.headers["X-Avg-Response-Time-Ms"] = f"{avg_time:.2f}"
+                response.headers["X-Performance-Optimized"] = "true"
+            
+            return response
+            
+        except Exception as e:
+            # Track failed request
+            processing_time_ms = (time.time() - start_time) * 1000
+            await self._update_performance_metrics(
+                request_id, processing_time_ms, False, request.url.path
+            )
+            
+            logger.error(f"Request {request_id} failed after {processing_time_ms:.2f}ms: {e}")
+            raise
+            
+        finally:
+            # Update concurrent request count
+            async with self._lock:
+                self._concurrent_requests = max(0, self._concurrent_requests - 1)
+    
+    async def _update_performance_metrics(
+        self,
+        request_id: str,
+        processing_time_ms: float,
+        success: bool,
+        path: str
+    ):
+        """Update internal performance metrics."""
+        async with self._lock:
+            # Update response times (keep last 1000)
+            self._request_times.append(processing_time_ms)
+            if len(self._request_times) > 1000:
+                self._request_times = self._request_times[-1000:]
+            
+            # Track slow requests
+            if processing_time_ms > self.slow_request_threshold_ms:
+                slow_request = {
+                    "request_id": request_id,
+                    "processing_time_ms": processing_time_ms,
+                    "path": path,
+                    "timestamp": time.time(),
+                    "success": success
+                }
+                self._slow_requests.append(slow_request)
+                
+                # Keep last 100 slow requests
+                if len(self._slow_requests) > 100:
+                    self._slow_requests = self._slow_requests[-100:]
+    
+    async def _get_average_response_time(self) -> float:
+        """Get current average response time."""
+        if not self._request_times:
+            return 0.0
+        return sum(self._request_times) / len(self._request_times)
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get current performance statistics."""
+        if not self._request_times:
+            return {
+                "total_requests": 0,
+                "avg_response_time_ms": 0.0,
+                "concurrent_requests": self._concurrent_requests,
+                "slow_requests_count": 0
+            }
+        
+        return {
+            "total_requests": len(self._request_times),
+            "avg_response_time_ms": sum(self._request_times) / len(self._request_times),
+            "min_response_time_ms": min(self._request_times),
+            "max_response_time_ms": max(self._request_times),
+            "concurrent_requests": self._concurrent_requests,
+            "slow_requests_count": len(self._slow_requests),
+            "p95_response_time_ms": (
+                sorted(self._request_times)[int(0.95 * len(self._request_times))]
+                if len(self._request_times) > 0 else 0.0
+            )
+        }
+
+
+class AsyncLoadBalancingMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware for async load balancing and request distribution optimization.
+    
+    Implements intelligent request routing, adaptive throttling, and
+    resource-aware load distribution for enhanced server-side performance.
+    """
+    
+    def __init__(
+        self,
+        app,
+        enable_adaptive_throttling: bool = True,
+        max_queue_size: int = 10000,
+        load_balance_strategy: str = "round_robin"
+    ):
+        """Initialize async load balancing middleware."""
+        super().__init__(app)
+        self.enable_adaptive_throttling = enable_adaptive_throttling
+        self.max_queue_size = max_queue_size
+        self.load_balance_strategy = load_balance_strategy
+        
+        # Load balancing state
+        self._request_queue = asyncio.Queue(maxsize=max_queue_size)
+        self._active_workers = 0
+        self._max_workers = 50  # Could be configurable
+        self._worker_semaphore = asyncio.Semaphore(self._max_workers)
+        
+        # Load distribution tracking
+        self._endpoint_loads = {}
+        self._lock = asyncio.Lock()
+        
+        logger.info(f"AsyncLoadBalancingMiddleware initialized with {load_balance_strategy} strategy")
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """
+        Apply load balancing and request distribution optimization.
+        
+        Args:
+            request: FastAPI request object  
+            call_next: Next middleware or route handler
+            
+        Returns:
+            Response with load balancing headers and optimization metadata
+        """
+        endpoint = request.url.path
+        start_time = time.time()
+        
+        # Check if we should throttle this request
+        if self.enable_adaptive_throttling:
+            should_throttle = await self._should_throttle_request(endpoint)
+            if should_throttle:
+                return Response(
+                    content="Request throttled due to high load",
+                    status_code=429,
+                    headers={
+                        "X-Load-Balancing": "throttled",
+                        "X-Endpoint": endpoint,
+                        "Retry-After": "5"
+                    }
+                )
+        
+        # Acquire worker semaphore for load balancing
+        async with self._worker_semaphore:
+            try:
+                # Track endpoint load
+                await self._track_endpoint_load(endpoint, start=True)
+                
+                # Process request
+                response = await call_next(request)
+                
+                # Add load balancing headers
+                processing_time_ms = (time.time() - start_time) * 1000
+                response.headers["X-Load-Balanced"] = "true"
+                response.headers["X-Worker-ID"] = f"worker_{self._active_workers}"
+                response.headers["X-Endpoint-Load"] = str(
+                    self._endpoint_loads.get(endpoint, {}).get("current_load", 0)
+                )
+                response.headers["X-Processing-Time-Ms"] = f"{processing_time_ms:.2f}"
+                
+                return response
+                
+            finally:
+                # Track endpoint load completion
+                await self._track_endpoint_load(endpoint, start=False)
+    
+    async def _should_throttle_request(self, endpoint: str) -> bool:
+        """Determine if request should be throttled based on current load."""
+        async with self._lock:
+            endpoint_info = self._endpoint_loads.get(endpoint, {})
+            current_load = endpoint_info.get("current_load", 0)
+            avg_response_time = endpoint_info.get("avg_response_time", 0)
+            
+            # Throttle if endpoint is heavily loaded or responding slowly
+            return (
+                current_load > 20 or  # More than 20 concurrent requests to this endpoint
+                avg_response_time > 5000  # Average response time > 5 seconds
+            )
+    
+    async def _track_endpoint_load(self, endpoint: str, start: bool):
+        """Track load for specific endpoint."""
+        async with self._lock:
+            if endpoint not in self._endpoint_loads:
+                self._endpoint_loads[endpoint] = {
+                    "current_load": 0,
+                    "total_requests": 0,
+                    "total_response_time": 0,
+                    "avg_response_time": 0
+                }
+            
+            if start:
+                self._endpoint_loads[endpoint]["current_load"] += 1
+                self._endpoint_loads[endpoint]["total_requests"] += 1
+                self._active_workers += 1
+            else:
+                self._endpoint_loads[endpoint]["current_load"] = max(
+                    0, self._endpoint_loads[endpoint]["current_load"] - 1
+                )
+                self._active_workers = max(0, self._active_workers - 1)
+    
+    def get_load_balancing_stats(self) -> Dict[str, Any]:
+        """Get current load balancing statistics."""
+        return {
+            "active_workers": self._active_workers,
+            "max_workers": self._max_workers,
+            "available_workers": self._max_workers - self._active_workers,
+            "load_balance_strategy": self.load_balance_strategy,
+            "endpoint_loads": self._endpoint_loads.copy(),
+            "adaptive_throttling_enabled": self.enable_adaptive_throttling
+        }

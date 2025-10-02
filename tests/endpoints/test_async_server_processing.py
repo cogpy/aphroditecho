@@ -1,21 +1,28 @@
 """
 Tests for enhanced async server-side processing in Deep Tree Echo endpoints.
 
-Validates concurrent request handling, resource management, and streaming
-capabilities for Task 5.2.3 implementation.
+Validates the non-blocking request handling, concurrent processing for multiple
+DTESN requests, and async response streaming capabilities.
 """
 
 import asyncio
+import json
 import pytest
+import time
+from unittest.mock import AsyncMock, Mock, patch
+
 from fastapi.testclient import TestClient
+from fastapi import FastAPI
 
 from aphrodite.endpoints.deep_tree_echo import create_app
 from aphrodite.endpoints.deep_tree_echo.config import DTESNConfig
 from aphrodite.endpoints.deep_tree_echo.async_manager import (
-    AsyncConnectionPool,
+    AsyncConnectionPool, 
     ConcurrencyManager,
+    AsyncRequestQueue,
     ConnectionPoolConfig
 )
+from aphrodite.endpoints.deep_tree_echo.dtesn_processor import DTESNProcessor
 
 
 class TestAsyncServerSideProcessing:

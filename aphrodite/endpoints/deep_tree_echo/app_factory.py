@@ -188,5 +188,36 @@ def create_app(
         
         logger.info("Deep Tree Echo FastAPI application shutdown complete")
 
+    # Add enhanced async middleware stack for optimal performance
+    if enable_async_resources:
+        from aphrodite.endpoints.deep_tree_echo.middleware import (
+            AsyncPerformanceMiddleware,
+            AsyncLoadBalancingMiddleware
+        )
+        
+        # Add performance monitoring middleware
+        app.add_middleware(
+            AsyncPerformanceMiddleware,
+            enable_detailed_metrics=True,
+            performance_threshold_ms=1000.0,
+            slow_request_threshold_ms=5000.0
+        )
+        
+        # Add load balancing middleware
+        app.add_middleware(
+            AsyncLoadBalancingMiddleware,
+            enable_adaptive_throttling=True,
+            max_queue_size=10000,
+            load_balance_strategy="round_robin"
+        )
+        
+        logger.info("Enhanced async middleware stack added for optimal performance")
+
+    # Store async resources in app state for access by dependencies
+    app.state.connection_pool = connection_pool
+    app.state.concurrency_manager = concurrency_manager
+
+    return app
+
     logger.info(f"Deep Tree Echo FastAPI application created successfully with templates at {TEMPLATES_DIR}")
     return app

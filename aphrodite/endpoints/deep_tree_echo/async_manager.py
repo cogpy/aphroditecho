@@ -305,19 +305,18 @@ class ConcurrencyManager:
         current_time = time.time()
         
         # Remove old request timestamps beyond the rate limit window
-        cutoff_time = current_time - (60.0 / self.max_requests_per_minute)
-        
-        # Clean up timestamps older than the rate limiting window
-        self._request_times = [
-            timestamp for timestamp in self._request_times
-            if current_time - timestamp < 60.0
-        ]
-        
-        # Log cleanup statistics for monitoring
-        if len(self._request_times) > 0:
-            logger.debug(
-                f"Rate limit cleanup: {len(self._request_times)} active timestamps remaining"
-            )
+        async with self._lock:
+            # Clean up timestamps older than the rate limiting window
+            self._request_times = [
+                timestamp for timestamp in self._request_times
+                if current_time - timestamp < 60.0
+            ]
+            
+            # Log cleanup statistics for monitoring
+            if len(self._request_times) > 0:
+                logger.debug(
+                    f"Rate limit cleanup: {len(self._request_times)} active timestamps remaining"
+                )
     
     def get_current_load(self) -> Dict[str, Any]:
         """Get current concurrency and rate limiting statistics."""
@@ -335,5 +334,206 @@ class ConcurrencyManager:
             "concurrency_utilization": (
                 (self.max_concurrent_requests - self._request_semaphore._value) 
                 / self.max_concurrent_requests
-            )
+            ),
+            "available_slots": self._request_semaphore._value,
+            "burst_capacity_remaining": self._rate_limiter._value
+        }
+
+
+class AsyncRequestQueue:
+    """
+    Enhanced async request queue with priority handling and load balancing.
+    
+    Provides non-blocking request queuing with priority levels, circuit breaker
+    pattern, and adaptive load balancing based on system performance.
+    """
+    
+    def __init__(
+        self,
+        max_queue_size: int = 1000,
+        priority_levels: int = 3,
+        circuit_breaker_threshold: int = 5,
+        circuit_breaker_timeout: float = 60.0,
+        adaptive_timeout: bool = True
+    ):
+        """Initialize async request queue with enhanced features."""
+        self.max_queue_size = max_queue_size
+        self.priority_levels = priority_levels
+        self.circuit_breaker_threshold = circuit_breaker_threshold
+        self.circuit_breaker_timeout = circuit_breaker_timeout
+        self.adaptive_timeout = adaptive_timeout
+        
+        # Priority queues for different request types
+        self._priority_queues = [
+            asyncio.Queue(maxsize=max_queue_size // priority_levels)
+            for _ in range(priority_levels)
+        ]
+        
+        # Circuit breaker state
+        self._circuit_breaker_failures = 0
+        self._circuit_breaker_last_failure = 0.0
+        self._circuit_breaker_open = False
+        
+        # Performance tracking for adaptive timeouts
+        self._response_times = []
+        self._success_rate = 1.0
+        self._lock = asyncio.Lock()
+        
+        logger.info(f"AsyncRequestQueue initialized with {priority_levels} priority levels")
+    
+    async def enqueue_request(
+        self,
+        request_data: Any,
+        priority: int = 1,
+        timeout: Optional[float] = None
+    ) -> str:
+        """
+        Enqueue request with priority and timeout handling.
+        
+        Args:
+            request_data: Request data to process
+            priority: Request priority (0=highest, 2=lowest)
+            timeout: Optional custom timeout
+            
+        Returns:
+            Request ID for tracking
+        """
+        # Check circuit breaker
+        if self._circuit_breaker_open:
+            current_time = time.time()
+            if current_time - self._circuit_breaker_last_failure < self.circuit_breaker_timeout:
+                raise RuntimeError("Circuit breaker is open - service temporarily unavailable")
+            else:
+                # Reset circuit breaker
+                self._circuit_breaker_open = False
+                self._circuit_breaker_failures = 0
+                logger.info("Circuit breaker reset - service available")
+        
+        # Validate priority level
+        priority = max(0, min(priority, self.priority_levels - 1))
+        
+        # Generate request ID
+        request_id = f"req_{int(time.time() * 1000000)}_{priority}"
+        
+        # Calculate adaptive timeout if enabled
+        if timeout is None and self.adaptive_timeout:
+            timeout = self._calculate_adaptive_timeout()
+        
+        # Create request with metadata
+        request_item = {
+            "id": request_id,
+            "data": request_data,
+            "priority": priority,
+            "timeout": timeout,
+            "enqueued_at": time.time(),
+            "retries": 0
+        }
+        
+        try:
+            # Add to appropriate priority queue (non-blocking)
+            self._priority_queues[priority].put_nowait(request_item)
+            logger.debug(f"Enqueued request {request_id} with priority {priority}")
+            return request_id
+            
+        except asyncio.QueueFull:
+            logger.warning(f"Queue full for priority {priority}, rejecting request {request_id}")
+            raise RuntimeError(f"Request queue full for priority level {priority}")
+    
+    async def dequeue_request(self) -> Optional[Dict[str, Any]]:
+        """
+        Dequeue next request based on priority.
+        
+        Returns:
+            Next request to process or None if no requests available
+        """
+        # Try queues in priority order (0=highest priority)
+        for priority in range(self.priority_levels):
+            try:
+                # Non-blocking get
+                request_item = self._priority_queues[priority].get_nowait()
+                logger.debug(f"Dequeued request {request_item['id']} with priority {priority}")
+                return request_item
+            except asyncio.QueueEmpty:
+                continue
+        
+        return None
+    
+    async def record_request_result(
+        self,
+        request_id: str,
+        success: bool,
+        response_time: float,
+        error: Optional[str] = None
+    ):
+        """
+        Record request completion for performance tracking and circuit breaker.
+        
+        Args:
+            request_id: Request ID
+            success: Whether request succeeded
+            response_time: Request processing time
+            error: Error message if failed
+        """
+        async with self._lock:
+            # Update response time tracking
+            self._response_times.append(response_time)
+            if len(self._response_times) > 100:
+                self._response_times = self._response_times[-100:]  # Keep last 100
+            
+            # Update success rate
+            if success:
+                self._success_rate = 0.95 * self._success_rate + 0.05 * 1.0
+                # Reset circuit breaker failures on success
+                if self._circuit_breaker_failures > 0:
+                    self._circuit_breaker_failures = max(0, self._circuit_breaker_failures - 1)
+            else:
+                self._success_rate = 0.95 * self._success_rate + 0.05 * 0.0
+                self._circuit_breaker_failures += 1
+                self._circuit_breaker_last_failure = time.time()
+                
+                # Check if circuit breaker should open
+                if self._circuit_breaker_failures >= self.circuit_breaker_threshold:
+                    self._circuit_breaker_open = True
+                    logger.warning(
+                        f"Circuit breaker opened due to {self._circuit_breaker_failures} failures"
+                    )
+                
+                logger.warning(f"Request {request_id} failed: {error}")
+    
+    def _calculate_adaptive_timeout(self) -> float:
+        """Calculate adaptive timeout based on historical response times."""
+        if not self._response_times:
+            return 30.0  # Default timeout
+        
+        # Calculate 95th percentile response time
+        sorted_times = sorted(self._response_times)
+        p95_index = int(0.95 * len(sorted_times))
+        p95_time = sorted_times[p95_index] if p95_index < len(sorted_times) else sorted_times[-1]
+        
+        # Add buffer based on success rate
+        buffer_multiplier = 2.0 if self._success_rate < 0.9 else 1.5
+        adaptive_timeout = p95_time * buffer_multiplier
+        
+        # Clamp between reasonable bounds
+        return max(5.0, min(adaptive_timeout, 120.0))
+    
+    def get_queue_stats(self) -> Dict[str, Any]:
+        """Get current queue statistics."""
+        total_queued = sum(q.qsize() for q in self._priority_queues)
+        queue_sizes = [q.qsize() for q in self._priority_queues]
+        
+        avg_response_time = (
+            sum(self._response_times) / len(self._response_times)
+            if self._response_times else 0.0
+        )
+        
+        return {
+            "total_queued_requests": total_queued,
+            "priority_queue_sizes": queue_sizes,
+            "queue_utilization": total_queued / self.max_queue_size,
+            "circuit_breaker_open": self._circuit_breaker_open,
+            "circuit_breaker_failures": self._circuit_breaker_failures,
+            "success_rate": self._success_rate,
+            "avg_response_time": avg_response_time,
+            "adaptive_timeout": self._calculate_adaptive_timeout()
         }

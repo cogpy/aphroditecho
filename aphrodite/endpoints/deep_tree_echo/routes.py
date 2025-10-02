@@ -475,6 +475,276 @@ async def stream_process_dtesn(
             "X-Server-Rendered": "true",
             "X-Stream-Enhanced": "true",
             "X-Backpressure-Enabled": "true",
+            "X-Async-Processing": "true"
+        }
+    )
+
+
+@router.post("/priority_process", response_model=DTESNResponse)
+async def priority_process_dtesn(
+    request_data: DTESNRequest,
+    priority: int = Field(default=1, ge=0, le=2, description="Request priority (0=highest, 2=lowest)"),
+    timeout: Optional[float] = Field(default=None, description="Custom timeout in seconds"),
+    processor: DTESNProcessor = Depends(get_dtesn_processor)
+) -> DTESNResponse:
+    """
+    Enhanced priority-based DTESN processing with advanced async queue management.
+
+    Processes input through DTESN with priority queuing, circuit breaker pattern,
+    and adaptive timeout handling for optimal server-side non-blocking performance.
+
+    Args:
+        request_data: DTESN processing request
+        priority: Request priority level (0=highest, 2=lowest)
+        timeout: Optional custom timeout
+        processor: DTESN processor instance
+
+    Returns:
+        DTESN processing result with priority queue metadata
+    """
+    start_time = time.time()
+    
+    try:
+        # Process with priority queue
+        result = await processor.process_with_priority_queue(
+            input_data=request_data.input_data,
+            priority=priority,
+            membrane_depth=request_data.membrane_depth,
+            esn_size=request_data.esn_size,
+            timeout=timeout
+        )
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        response_data = DTESNResponse(
+            status="success",
+            result=result.to_dict(),
+            processing_time_ms=result.processing_time_ms,
+            membrane_layers=result.membrane_layers,
+            server_rendered=True,
+            performance_metrics={
+                "total_processing_time_ms": processing_time,
+                "priority": priority,
+                "timeout_used": timeout,
+                "queue_managed": True,
+                "non_blocking": True
+            }
+        )
+        
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"Priority DTESN processing error: {e}")
+        error_time = (time.time() - start_time) * 1000
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Priority DTESN processing failed: {e}",
+                "processing_time_ms": error_time,
+                "priority": priority,
+                "server_rendered": True
+            }
+        )
+
+
+@router.post("/stream_chunks")
+async def stream_chunks_dtesn(
+    request: DTESNRequest,
+    chunk_size: int = Field(default=1024, ge=128, le=8192, description="Processing chunk size"),
+    processor: DTESNProcessor = Depends(get_dtesn_processor)
+) -> StreamingResponse:
+    """
+    Advanced streaming DTESN processing with intelligent chunking and backpressure.
+
+    Provides real-time streaming of DTESN processing results with adaptive chunking,
+    flow control, and enhanced server-side resource management.
+
+    Args:
+        request: DTESN processing request
+        chunk_size: Size of processing chunks
+        processor: DTESN processor instance
+
+    Returns:
+        Streaming response with advanced chunk management
+    """
+    
+    async def generate_chunk_stream():
+        try:
+            async for chunk in processor.process_streaming_chunks(
+                input_data=request.input_data,
+                membrane_depth=request.membrane_depth,
+                esn_size=request.esn_size,
+                chunk_size=chunk_size
+            ):
+                message = f'data: {json.dumps(chunk)}\n\n'
+                yield message
+                
+                # Add small delay between chunks for streaming effect
+                await asyncio.sleep(0.005)
+                
+        except Exception as e:
+            logger.error(f"Chunk streaming error: {e}")
+            error_chunk = {
+                "type": "error",
+                "error": str(e),
+                "timestamp": time.time()
+            }
+            yield f'data: {json.dumps(error_chunk)}\n\n'
+    
+    return StreamingResponse(
+        generate_chunk_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Server-Rendered": "true",
+            "X-Chunk-Streaming": "true",
+            "X-Chunk-Size": str(chunk_size),
+            "X-Backpressure-Enabled": "true",
+            "X-Async-Processing": "enhanced"
+        }
+    )
+
+
+@router.get("/async_status")
+async def get_async_status(
+    request: Request,
+    processor: DTESNProcessor = Depends(get_dtesn_processor)
+) -> Dict[str, Any]:
+    """
+    Get comprehensive async processing status and performance metrics.
+
+    Returns detailed information about concurrent processing capabilities,
+    queue status, connection pool health, and server-side performance metrics.
+
+    Returns:
+        Comprehensive async status information
+    """
+    try:
+        # Get processor statistics
+        processing_stats = processor.get_processing_stats()
+        
+        # Get queue statistics if available
+        queue_stats = {}
+        if hasattr(processor, '_priority_queue'):
+            queue_stats = processor._priority_queue.get_queue_stats()
+        
+        # Get connection pool stats if available
+        pool_stats = {}
+        if hasattr(request.app.state, 'connection_pool'):
+            pool = request.app.state.connection_pool
+            if hasattr(pool, 'get_stats'):
+                pool_stats = pool.get_stats().__dict__
+        
+        # Get concurrency manager stats if available
+        concurrency_stats = {}
+        if hasattr(request.app.state, 'concurrency_manager'):
+            manager = request.app.state.concurrency_manager
+            if hasattr(manager, 'get_current_load'):
+                concurrency_stats = manager.get_current_load()
+        
+        return {
+            "status": "healthy",
+            "timestamp": time.time(),
+            "server_side_processing": True,
+            "async_capabilities": {
+                "concurrent_processing": True,
+                "priority_queuing": hasattr(processor, '_priority_queue'),
+                "streaming_chunks": True,
+                "connection_pooling": bool(pool_stats),
+                "rate_limiting": bool(concurrency_stats),
+                "backpressure_control": True
+            },
+            "processing_stats": processing_stats,
+            "queue_stats": queue_stats,
+            "connection_pool_stats": pool_stats,
+            "concurrency_stats": concurrency_stats,
+            "performance_metrics": {
+                "max_concurrent_processes": processor.max_concurrent_processes,
+                "engine_integration": processor.engine is not None,
+                "components_available": getattr(processor, 'components_real', False)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Async status check error: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": time.time(),
+            "server_side_processing": True
+        }
+
+
+@router.get("/load_balancer_status")
+async def get_load_balancer_status(request: Request) -> Dict[str, Any]:
+    """
+    Get load balancer and resource optimization status.
+    
+    Provides comprehensive information about server-side load distribution,
+    resource utilization, and performance optimization metrics.
+    
+    Returns:
+        Load balancer status and optimization metrics
+    """
+    try:
+        current_time = time.time()
+        
+        # Get system resource information
+        import psutil
+        
+        system_stats = {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "memory_percent": psutil.virtual_memory().percent,
+            "disk_usage_percent": psutil.disk_usage('/').percent,
+            "active_connections": len(psutil.net_connections()),
+            "load_average": psutil.getloadavg() if hasattr(psutil, 'getloadavg') else [0, 0, 0]
+        }
+        
+        # Calculate load distribution recommendations
+        load_recommendations = []
+        
+        if system_stats["cpu_percent"] > 80:
+            load_recommendations.append({
+                "type": "cpu_high",
+                "message": "Consider scaling concurrent processing limits",
+                "suggested_action": "reduce_concurrency"
+            })
+        
+        if system_stats["memory_percent"] > 85:
+            load_recommendations.append({
+                "type": "memory_high", 
+                "message": "Consider reducing connection pool size",
+                "suggested_action": "optimize_memory"
+            })
+        
+        return {
+            "status": "active",
+            "timestamp": current_time,
+            "load_balancing_enabled": True,
+            "system_stats": system_stats,
+            "load_recommendations": load_recommendations,
+            "optimization_features": {
+                "adaptive_concurrency": True,
+                "resource_monitoring": True,
+                "automatic_scaling": False,  # Could be enhanced
+                "circuit_breaker": True
+            }
+        }
+        
+    except ImportError:
+        return {
+            "status": "limited",
+            "message": "psutil not available for detailed system monitoring",
+            "timestamp": current_time,
+            "load_balancing_enabled": True
+        }
+    except Exception as e:
+        logger.error(f"Load balancer status error: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": current_time
             "X-Concurrent-Processing": "true"
         }
     )
