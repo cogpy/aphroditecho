@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Import the fusion system
 try:
-    from deep_tree_echo_fusion import DeepTreeEchoFusion, DeepTreeEchoConfig
+    from cognitive_architectures.deep_tree_echo_fusion import DeepTreeEchoFusion, DeepTreeEchoConfig
     print("✓ Deep Tree Echo Fusion module imported successfully")
 except ImportError as e:
     print(f"✗ Failed to import fusion module: {e}")
