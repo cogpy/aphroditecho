@@ -90,6 +90,72 @@ class DTESNResult(BaseModel):
             "engine_integration": self.engine_integration,
         }
 
+    def serialize(self, format: str = "json_optimized", **config_kwargs) -> Union[str, bytes]:
+        """Serialize result using optimized serialization strategies."""
+        try:
+            from .serializers import serialize_dtesn_result
+            return serialize_dtesn_result(self, format=format, **config_kwargs)
+        except ImportError:
+            # Fallback to basic to_dict if serializers not available
+            import json
+            return json.dumps(self.to_dict(), separators=(',', ':'))
+
+    def to_json_optimized(self, include_engine_data: bool = False) -> str:
+        """Convert to optimized JSON with reduced overhead."""
+        try:
+            from .serializers import SerializationConfig, SerializerFactory
+            config = SerializationConfig(
+                format="json_optimized",
+                include_engine_integration=include_engine_data,
+                include_metadata=True,
+                compress_arrays=True
+            )
+            serializer = SerializerFactory.create_serializer(config)
+            return serializer.serialize(self)
+        except ImportError:
+            # Fallback implementation
+            data = {
+                "input": self.input_data,
+                "output": self.processed_output,
+                "processing_time_ms": self.processing_time_ms,
+                "membrane_layers": self.membrane_layers,
+            }
+            if include_engine_data and self.engine_integration:
+                data["engine_available"] = self.engine_integration.get("engine_available", False)
+            import json
+            return json.dumps(data, separators=(',', ':'))
+
+    def to_binary(self) -> bytes:
+        """Convert to binary format for high-performance scenarios."""
+        try:
+            from .serializers import serialize_dtesn_result
+            return serialize_dtesn_result(self, format="binary")
+        except ImportError:
+            # Fallback to msgpack if serializers not available
+            try:
+                import msgspec
+                return msgspec.msgpack.encode(self.to_dict())
+            except ImportError:
+                import pickle
+                return pickle.dumps(self.to_dict())
+
+    def to_deterministic(self) -> str:
+        """Convert to deterministic format for consistent responses."""
+        try:
+            from .serializers import serialize_dtesn_result
+            return serialize_dtesn_result(self, format="deterministic")
+        except ImportError:
+            # Fallback deterministic implementation
+            import json
+            import hashlib
+            data = self.to_dict().copy()
+            # Remove non-deterministic fields
+            data.pop("processing_time_ms", None)
+            data["_deterministic"] = True
+            content = json.dumps(data, sort_keys=True, separators=(',', ':'))
+            data["_checksum"] = hashlib.sha256(content.encode()).hexdigest()[:16]
+            return json.dumps(data, sort_keys=True, separators=(',', ':'))
+
 
 class DTESNProcessor:
     """
