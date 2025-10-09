@@ -172,16 +172,27 @@ def create_app(
     # Add startup and shutdown event handlers for async resource management
     @app.on_event("startup")
     async def startup_event():
-        """Initialize async resources on application startup."""
+        """Initialize async resources and monitoring on application startup."""
         if connection_pool:
             await connection_pool.start()
             logger.info("Connection pool started successfully")
         
-        logger.info("Deep Tree Echo FastAPI application started with enhanced async processing")
+        # Start monitoring system
+        await start_monitoring()
+        
+        # Enable console alerts in development
+        if config.enable_docs:  # Assume docs enabled means development
+            alert_manager.add_notification_handler(console_alert_handler)
+            logger.info("Console alert handler enabled for development")
+        
+        logger.info("Deep Tree Echo FastAPI application started with enhanced async processing and monitoring")
 
     @app.on_event("shutdown") 
     async def shutdown_event():
-        """Clean up async resources on application shutdown."""
+        """Clean up async resources and monitoring on application shutdown."""
+        # Stop monitoring system
+        await stop_monitoring()
+        
         if connection_pool:
             await connection_pool.stop()
             logger.info("Connection pool stopped successfully")

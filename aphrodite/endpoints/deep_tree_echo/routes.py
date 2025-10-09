@@ -48,7 +48,7 @@ class DTESNBatchRequest(BaseModel):
 
 
 class DTESNResponse(BaseModel):
-    """Response model for DTESN processing results."""
+    """Response model for DTESN processing results with error recovery support."""
 
     status: str
     result: Dict[str, Any]
@@ -57,10 +57,16 @@ class DTESNResponse(BaseModel):
     server_rendered: bool = True
     engine_integration: Dict[str, Any] = Field(default_factory=dict)
     performance_metrics: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Error recovery fields
+    degraded_mode: bool = False
+    fallback_used: bool = False
+    recovery_info: Optional[Dict[str, Any]] = None
+    error_recovery_available: bool = True
 
 
 class DTESNBatchResponse(BaseModel):
-    """Response model for batch DTESN processing results."""
+    """Response model for batch DTESN processing results with error recovery support."""
 
     status: str
     results: List[Dict[str, Any]]
@@ -69,6 +75,11 @@ class DTESNBatchResponse(BaseModel):
     successful_count: int
     failed_count: int
     server_rendered: bool = True
+    
+    # Error recovery fields
+    recovery_applied: bool = False
+    degraded_mode: bool = False
+    partial_success: bool = False
 
 
 def get_dtesn_processor(request: Request) -> DTESNProcessor:
@@ -230,25 +241,82 @@ async def process_dtesn(
     except Exception as e:
         logger.error(f"DTESN processing error: {e}")
         error_time = time.time() - start_time
-        error_detail = {
-            "error": f"DTESN processing failed: {e}",
-            "processing_time_ms": error_time * 1000,
-            "server_rendered": True
-        }
-
+        
+        # Update error context with processing details
+        error_context = getattr(request.state, 'dtesn_context', {}).get('error_context')
+        if error_context:
+            error_context.processing_stage = "route_processing"
+            error_context.user_input = request_data.input_data[:100] if request_data.input_data else None
+        
+        # Try error recovery if available
+        recovery_result = await error_recovery_service.execute_with_recovery(
+            operation=lambda x: processor.process(x, request_data.membrane_depth, request_data.esn_size),
+            input_data=request_data.input_data,
+            context=error_context,
+            enable_retry=True,
+            enable_fallback=True
+        )
+        
+        if recovery_result.success:
+            # Recovery succeeded - return recovered result with degraded flag
+            logger.info(f"Error recovery succeeded with mode: {recovery_result.recovery_mode}")
+            
+            response_data = DTESNResponse(
+                status="success",
+                result=recovery_result.result if hasattr(recovery_result.result, 'to_dict') else {"output": str(recovery_result.result)},
+                processing_time_ms=error_time * 1000,
+                membrane_layers=1,  # Reduced for fallback
+                server_rendered=True,
+                degraded_mode=recovery_result.degraded,
+                fallback_used=recovery_result.fallback_used,
+                recovery_info=recovery_result.to_dict()
+            )
+            
+            if wants_html(request):
+                return templates.TemplateResponse(
+                    "process_result.html",
+                    {
+                        "request": request,
+                        "data": response_data.dict(),
+                        "input_data": request_data.input_data,
+                        "timestamp": datetime.now().isoformat(),
+                        "recovery_mode": recovery_result.recovery_mode
+                    }
+                )
+            else:
+                return response_data
+        
+        # Recovery failed - return structured error response
+        from .errors import DTESNProcessingError, create_error_response
+        
+        dtesn_error = DTESNProcessingError(
+            f"DTESN processing failed: {e}",
+            processing_stage="route_processing",
+            context=error_context,
+            original_error=e
+        )
+        
+        error_response = create_error_response(dtesn_error, error_context)
+        
         if wants_html(request):
             return templates.TemplateResponse(
                 "process_result.html",
                 {
                     "request": request,
-                    "data": {"status": "error", "error": str(e)},
+                    "data": {
+                        "status": "error", 
+                        "error": error_response.message,
+                        "error_code": error_response.error_code,
+                        "recovery_suggestions": error_response.recovery_suggestions
+                    },
                     "input_data": request_data.input_data,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "error_details": error_response.dict()
                 },
                 status_code=500
             )
         else:
-            raise HTTPException(status_code=500, detail=error_detail)
+            raise HTTPException(status_code=500, detail=error_response.dict())
 
 
 @router.post("/batch_process", response_model=DTESNBatchResponse)
@@ -317,10 +385,84 @@ async def batch_process_dtesn(
 
     except Exception as e:
         logger.error(f"Enhanced batch DTESN processing error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Enhanced batch DTESN processing failed: {e}"
+        
+        # Create error context for batch processing
+        from .errors import DTESNProcessingError, create_error_response, ErrorContext
+        
+        error_context = ErrorContext(
+            request_id=f"batch_{int(time.time() * 1000)}",
+            endpoint="/deep_tree_echo/batch_process",
+            processing_stage="batch_processing",
+            user_input=f"Batch of {len(request.inputs)} inputs"
         )
+        
+        # Try recovery for batch operations with fallback to individual processing
+        recovery_results = []
+        successful_recoveries = 0
+        
+        for i, input_data in enumerate(request.inputs):
+            try:
+                recovery_result = await error_recovery_service.execute_with_recovery(
+                    operation=lambda x: processor.process(x, request.membrane_depth, request.esn_size),
+                    input_data=input_data,
+                    context=error_context,
+                    enable_retry=False,  # Skip retry for batch to avoid long delays
+                    enable_fallback=True
+                )
+                
+                if recovery_result.success:
+                    successful_recoveries += 1
+                    recovery_results.append({
+                        "input_index": i,
+                        "status": "recovered",
+                        "result": recovery_result.result if hasattr(recovery_result.result, 'to_dict') else {"output": str(recovery_result.result)},
+                        "recovery_mode": recovery_result.recovery_mode,
+                        "degraded": recovery_result.degraded,
+                        "server_rendered": True
+                    })
+                else:
+                    recovery_results.append({
+                        "input_index": i,
+                        "status": "failed",
+                        "error": str(recovery_result.error),
+                        "server_rendered": True
+                    })
+                    
+            except Exception as recovery_error:
+                logger.error(f"Recovery failed for batch item {i}: {recovery_error}")
+                recovery_results.append({
+                    "input_index": i,
+                    "status": "failed",
+                    "error": f"Recovery failed: {recovery_error}",
+                    "server_rendered": True
+                })
+        
+        # Return partial results if any recoveries succeeded
+        if successful_recoveries > 0:
+            processing_time = (time.time() - start_time) * 1000
+            
+            return DTESNBatchResponse(
+                status="partial_success",
+                results=recovery_results,
+                batch_size=len(request.inputs),
+                successful_count=successful_recoveries,
+                failed_count=len(request.inputs) - successful_recoveries,
+                total_processing_time_ms=processing_time,
+                server_rendered=True,
+                recovery_applied=True,
+                degraded_mode=True
+            )
+        
+        # All recovery attempts failed - return comprehensive error
+        dtesn_error = DTESNProcessingError(
+            f"Batch DTESN processing failed for all {len(request.inputs)} inputs: {e}",
+            processing_stage="batch_processing",
+            context=error_context,
+            original_error=e
+        )
+        
+        error_response = create_error_response(dtesn_error, error_context)
+        raise HTTPException(status_code=500, detail=error_response.dict())
 
 
 @router.post("/stream_process")
@@ -1009,3 +1151,86 @@ async def async_processing_status(
         )
     else:
         return JSONResponse(data)
+
+
+@router.get("/monitoring")
+async def get_monitoring_dashboard() -> Dict[str, Any]:
+    """
+    Get real-time monitoring dashboard data with comprehensive system health metrics.
+
+    Returns comprehensive monitoring data including error rates, performance metrics,
+    alert status, recovery statistics, and system health information to support
+    99.9% uptime requirements.
+
+    Returns:
+        Real-time monitoring dashboard data
+    """
+    from .monitoring import monitoring_dashboard
+    
+    dashboard_data = monitoring_dashboard.get_dashboard_data()
+    dashboard_data["endpoint"] = "/deep_tree_echo/monitoring"
+    dashboard_data["server_rendered"] = True
+    
+    return dashboard_data
+
+
+@router.get("/monitoring/alerts")
+async def get_active_alerts() -> Dict[str, Any]:
+    """
+    Get currently active alerts and recent alert history.
+
+    Returns:
+        Active alerts and alert history for monitoring dashboard
+    """
+    from .monitoring import alert_manager
+    
+    return {
+        "active_alerts": [alert.to_dict() for alert in alert_manager.get_active_alerts()],
+        "recent_alerts": [alert.to_dict() for alert in alert_manager.get_alert_history(50)],
+        "alert_counts": {
+            "active": len(alert_manager.get_active_alerts()),
+            "recent": len(alert_manager.get_alert_history(50))
+        },
+        "server_rendered": True
+    }
+
+
+@router.get("/monitoring/metrics")
+async def get_current_metrics() -> Dict[str, Any]:
+    """
+    Get current system metrics for real-time monitoring.
+
+    Returns:
+        Current system performance and health metrics
+    """
+    from .monitoring import metrics_collector
+    
+    metrics = metrics_collector.get_current_metrics()
+    return {
+        "metrics": metrics.to_dict(),
+        "collection_timestamp": datetime.now().isoformat(),
+        "server_rendered": True
+    }
+
+
+@router.get("/monitoring/recovery_stats")
+async def get_recovery_statistics() -> Dict[str, Any]:
+    """
+    Get error recovery statistics and system resilience metrics.
+
+    Returns:
+        Recovery statistics and resilience metrics
+    """
+    from .error_recovery import error_recovery_service
+    
+    recovery_stats = error_recovery_service.get_recovery_stats()
+    return {
+        "recovery_stats": recovery_stats,
+        "system_resilience": {
+            "recovery_enabled": True,
+            "fallback_modes_available": ["simplified", "cached", "statistical", "minimal", "offline"],
+            "circuit_breaker_enabled": True,
+            "retry_mechanisms_active": True
+        },
+        "server_rendered": True
+    }

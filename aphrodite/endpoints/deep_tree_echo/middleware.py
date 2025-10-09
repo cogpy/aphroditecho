@@ -2,7 +2,7 @@
 Middleware for Deep Tree Echo FastAPI endpoints.
 
 Provides request/response middleware for DTESN processing and performance monitoring
-with enhanced async resource management and concurrency control.
+with enhanced async resource management, concurrency control, and comprehensive error handling.
 """
 
 import time
@@ -11,12 +11,19 @@ import logging
 from typing import Callable, Optional
 
 from fastapi import Request, Response, HTTPException
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from aphrodite.endpoints.deep_tree_echo.async_manager import (
     AsyncConnectionPool,
     ConcurrencyManager
 )
+from .errors import (
+    DTESNError, DTESNSystemError, DTESNResourceError, DTESNNetworkError,
+    ErrorContext, create_error_response, error_aggregator,
+    dtesn_circuit_breaker
+)
+from .error_recovery import error_recovery_service
 
 logger = logging.getLogger(__name__)
 
@@ -31,31 +38,55 @@ class DTESNMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
-        Process DTESN-specific request handling with enhanced async resource management.
+        Process DTESN-specific request handling with enhanced async resource management and error recovery.
 
         Args:
             request: FastAPI request object
             call_next: Next middleware or route handler
 
         Returns:
-            Response with DTESN processing metadata and resource management headers
+            Response with DTESN processing metadata and comprehensive error handling
         """
+        # Create error context for comprehensive tracking
+        request_id = request.headers.get("X-Request-ID", f"req_{int(time.time() * 1000000)}")
+        error_context = ErrorContext(
+            request_id=request_id,
+            endpoint=str(request.url.path),
+            user_input=None,  # Will be populated by route handlers
+            processing_stage="middleware",
+            trace_id=request.headers.get("X-Trace-ID")
+        )
+
         # Add enhanced DTESN request context with resource management
         request.state.dtesn_context = {
-            "request_id": request.headers.get("X-Request-ID", f"req_{int(time.time() * 1000000)}"),
+            "request_id": request_id,
+            "error_context": error_context,
             "membrane_depth": 0,
             "processing_mode": "server_side",
             "async_processing": True,
             "resource_managed": self.connection_pool is not None,
-            "start_time": time.time()
+            "start_time": time.time(),
+            "circuit_breaker_active": False
         }
 
         try:
+            # Check circuit breaker status
+            system_health = error_aggregator.get_system_health_status()
+            if system_health.get("should_circuit_break", False):
+                request.state.dtesn_context["circuit_breaker_active"] = True
+                raise DTESNSystemError(
+                    "Circuit breaker activated due to high error rate",
+                    context=error_context
+                )
+
             # Use connection pool if available for resource-managed processing
             if self.connection_pool and self._is_dtesn_request(request):
                 async with self.connection_pool.get_connection() as connection_id:
                     request.state.dtesn_context["connection_id"] = connection_id
-                    response = await call_next(request)
+                    error_context.resource_state = {"connection_id": connection_id}
+                    
+                    # Execute with circuit breaker protection for DTESN requests
+                    response = await dtesn_circuit_breaker.call(call_next, request)
             else:
                 response = await call_next(request)
 
@@ -63,21 +94,71 @@ class DTESNMiddleware(BaseHTTPMiddleware):
             response.headers["X-DTESN-Processed"] = "true"
             response.headers["X-Processing-Mode"] = "server-side"
             response.headers["X-Async-Managed"] = "true" if self.connection_pool else "false"
-            response.headers["X-Request-ID"] = request.state.dtesn_context["request_id"]
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Error-Recovery-Available"] = "true"
+            
+            # Add system health indicators
+            if system_health.get("degraded_mode_recommended", False):
+                response.headers["X-System-Mode"] = "degraded"
+            else:
+                response.headers["X-System-Mode"] = "normal"
 
             return response
 
-        except Exception as e:
-            logger.error(f"DTESN middleware error for request {request.state.dtesn_context['request_id']}: {e}")
-            # Return error response while preserving resource cleanup
-            return Response(
-                content=f"DTESN processing error: {str(e)}",
-                status_code=500,
+        except DTESNError as dtesn_error:
+            # Handle DTESN-specific errors with structured response
+            logger.error(f"DTESN error in middleware: {dtesn_error.error_code}")
+            error_response = create_error_response(dtesn_error, error_context, include_debug_info=True)
+            
+            return JSONResponse(
+                status_code=self._get_http_status_code(dtesn_error),
+                content=error_response.dict(),
                 headers={
                     "X-DTESN-Error": "true",
-                    "X-Request-ID": request.state.dtesn_context["request_id"]
+                    "X-Request-ID": request_id,
+                    "X-Error-Code": dtesn_error.error_code,
+                    "X-Error-Category": dtesn_error.category.value,
+                    "X-Recovery-Available": "true" if dtesn_error.recovery_strategy.value != "abort" else "false"
                 }
             )
+
+        except Exception as e:
+            # Handle unexpected errors
+            logger.error(f"Unexpected middleware error for request {request_id}: {e}", exc_info=True)
+            
+            # Wrap in DTESN error for consistent handling
+            system_error = DTESNSystemError(
+                f"Middleware processing failed: {str(e)}",
+                context=error_context,
+                original_error=e
+            )
+            
+            error_response = create_error_response(system_error, error_context)
+            
+            return JSONResponse(
+                status_code=500,
+                content=error_response.dict(),
+                headers={
+                    "X-DTESN-Error": "true",
+                    "X-Request-ID": request_id,
+                    "X-Error-Code": system_error.error_code,
+                    "X-Unexpected-Error": "true"
+                }
+            )
+
+    def _get_http_status_code(self, error: DTESNError) -> int:
+        """Map DTESN error to appropriate HTTP status code."""
+        severity_to_status = {
+            "validation": 400,
+            "processing": 422,
+            "resource": 503,
+            "network": 502,
+            "configuration": 500,
+            "system": 500,
+            "dtesn": 500,
+            "engine": 503
+        }
+        return severity_to_status.get(error.category.value, 500)
 
     def _is_dtesn_request(self, request: Request) -> bool:
         """Check if request is for DTESN processing endpoints."""
