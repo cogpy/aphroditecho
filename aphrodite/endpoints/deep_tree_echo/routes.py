@@ -14,13 +14,17 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from aphrodite.endpoints.deep_tree_echo.dtesn_processor import DTESNProcessor
 from aphrodite.endpoints.deep_tree_echo.batch_manager import BatchConfiguration
 from aphrodite.endpoints.deep_tree_echo.load_integration import get_batch_load_function
+from aphrodite.endpoints.deep_tree_echo.content_negotiation import (
+    wants_html, wants_xml, create_negotiated_response,
+    content_negotiator, MultiFormatResponse
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,10 +133,8 @@ def get_engine_stats(request: Request) -> Dict[str, Any]:
         return {"engine_status": "error", "error": str(e)}
 
 
-def wants_html(request: Request) -> bool:
-    """Check if client wants HTML response based on Accept header."""
-    accept_header = request.headers.get("accept", "")
-    return "text/html" in accept_header or "application/xhtml+xml" in accept_header
+# Note: wants_html function now imported from content_negotiation module
+# The original function is replaced by enhanced content negotiation system
 
 
 @router.get("/")
@@ -140,15 +142,15 @@ async def dtesn_root(
     request: Request,
     templates: Jinja2Templates = Depends(get_templates),
     engine_stats: Dict[str, Any] = Depends(get_engine_stats)
-) -> Union[HTMLResponse, JSONResponse]:
-    """Root endpoint for Deep Tree Echo SSR API with engine integration status and content negotiation."""
+) -> Response:
+    """Root endpoint for Deep Tree Echo SSR API with engine integration status and multi-format content negotiation."""
     data = {
         "service": "Deep Tree Echo API",
         "version": "1.0.0",
         "description": "Server-side rendering API for DTESN processing with Aphrodite Engine integration",
         "endpoints": [
             "/process",
-            "/batch_process",
+            "/batch_process", 
             "/stream_process",
             "/status",
             "/membrane_info",
@@ -160,13 +162,13 @@ async def dtesn_root(
         "engine_integration": engine_stats
     }
 
-    if wants_html(request):
-        return templates.TemplateResponse(
-            "index.html",
-            {"request": request, "data": data}
-        )
-    else:
-        return JSONResponse(data)
+    return create_negotiated_response(
+        data=data,
+        request=request,
+        templates=templates,
+        template_name="index.html",
+        xml_root="deep_tree_echo_api"
+    )
 
 
 @router.post("/process", response_model=DTESNResponse)
@@ -1086,13 +1088,13 @@ async def dtesn_status(
     templates: Jinja2Templates = Depends(get_templates),
     processor: DTESNProcessor = Depends(get_dtesn_processor),
     engine_stats: Dict[str, Any] = Depends(get_engine_stats)
-) -> Union[HTMLResponse, JSONResponse]:
+) -> Response:
     """
     Get enhanced DTESN system status with engine integration.
 
     Returns server-rendered status information about the DTESN system
     including Aphrodite Engine integration status.
-    Supports both HTML and JSON responses via content negotiation.
+    Supports JSON, HTML, and XML responses via content negotiation.
 
     Returns:
         Enhanced system status information
@@ -1117,13 +1119,13 @@ async def dtesn_status(
         "server_rendered": True
     }
 
-    if wants_html(request):
-        return templates.TemplateResponse(
-            "status.html",
-            {"request": request, "data": data}
-        )
-    else:
-        return JSONResponse(data)
+    return create_negotiated_response(
+        data=data,
+        request=request,
+        templates=templates,
+        template_name="status.html",
+        xml_root="dtesn_status"
+    )
 
 
 @router.get("/membrane_info")
@@ -1131,13 +1133,13 @@ async def membrane_info(
     request: Request,
     templates: Jinja2Templates = Depends(get_templates),
     processor: DTESNProcessor = Depends(get_dtesn_processor)
-) -> Union[HTMLResponse, JSONResponse]:
+) -> Response:
     """
     Get comprehensive information about DTESN membrane hierarchy.
 
     Server-side endpoint providing detailed membrane computing information
     with enhanced server-side data fetching capabilities.
-    Supports both HTML and JSON responses via content negotiation.
+    Supports JSON, HTML, and XML responses via content negotiation.
 
     Returns:
         Enhanced membrane hierarchy information
@@ -1167,27 +1169,22 @@ async def membrane_info(
             "streaming_compatible": True,
             "engine_integrated": True
         },
-        "server_rendered": True
-    }
-
-    if wants_html(request):
-        operation_descriptions = {
+        "server_rendered": True,
+        "operation_descriptions": {
             "membrane_evolution": "Dynamic transformation of membrane structures",
             "cross_membrane_communication": "Communication protocols between different membrane levels",
             "rule_application": "Application of P-system evolution rules within membranes",
             "tree_enumeration": "OEIS A000081 compliant counting of rooted tree structures"
         }
+    }
 
-        return templates.TemplateResponse(
-            "membrane_info.html",
-            {
-                "request": request,
-                "data": data,
-                "operation_descriptions": operation_descriptions
-            }
-        )
-    else:
-        return JSONResponse(data)
+    return create_negotiated_response(
+        data=data,
+        request=request,
+        templates=templates,
+        template_name="membrane_info.html",
+        xml_root="membrane_hierarchy_info"
+    )
 
 
 @router.get("/async_status")
