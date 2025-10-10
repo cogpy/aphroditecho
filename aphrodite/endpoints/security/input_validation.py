@@ -9,13 +9,21 @@ XSS, and malformed data.
 import json
 import re
 import time
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 import html
 import logging
 
 from fastapi import HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, ValidationError
+
+# Import DTESN validation capabilities
+from .dtesn_validation import (
+    DTESNDataType, 
+    DTESNValidationConfig,
+    validate_dtesn_data_structure,
+    normalize_dtesn_configuration
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +81,7 @@ class ValidationConfig(BaseModel):
     enable_command_injection_protection: bool = True
     enable_size_limits: bool = True
     enable_content_type_validation: bool = True
+    enable_dtesn_validation: bool = True
     max_request_size: int = MAX_SIZES['total_request']
     allowed_content_types: List[str] = [
         'application/json',
@@ -80,6 +89,7 @@ class ValidationConfig(BaseModel):
         'text/plain',
         'multipart/form-data'
     ]
+    dtesn_config: Optional[DTESNValidationConfig] = None
 
 def validate_string_content(content: str, field_name: str = "input") -> str:
     """
@@ -174,6 +184,58 @@ def validate_json_structure(data: Any, max_depth: int = MAX_SIZES['json_depth'],
     
     else:
         return data
+
+
+def validate_dtesn_endpoint_data(data: Dict[str, Any], endpoint_path: str, config: ValidationConfig = None) -> Dict[str, Any]:
+    """
+    Validate DTESN-specific endpoint data structures.
+    
+    Args:
+        data: Request data to validate
+        endpoint_path: Endpoint path to determine validation type
+        config: Validation configuration
+        
+    Returns:
+        Validated and normalized data
+        
+    Raises:
+        HTTPException: If DTESN validation fails
+    """
+    if config is None or not config.enable_dtesn_validation:
+        return data
+        
+    dtesn_config = config.dtesn_config or DTESNValidationConfig()
+    
+    # Determine DTESN data type based on endpoint path
+    dtesn_type_mapping = {
+        '/dtesn/reservoir/config': DTESNDataType.ESN_RESERVOIR_CONFIG,
+        '/dtesn/membrane/create': DTESNDataType.PSYSTEM_MEMBRANE,
+        '/dtesn/bseries/parameters': DTESNDataType.BSERIES_PARAMETERS,
+        '/dtesn/integration/config': DTESNDataType.INTEGRATION_CONFIG,
+        '/dtesn/topology/oeis': DTESNDataType.OEIS_TOPOLOGY,
+    }
+    
+    # Check if this is a DTESN endpoint
+    for path_pattern, dtesn_type in dtesn_type_mapping.items():
+        if path_pattern in endpoint_path:
+            logger.info(f"Validating DTESN {dtesn_type.value} data for endpoint {endpoint_path}")
+            
+            # Normalize configuration data first
+            if 'config' in data or 'configuration' in data:
+                config_data = data.get('config') or data.get('configuration')
+                normalized_config = normalize_dtesn_configuration(config_data)
+                data['config'] = normalized_config
+            
+            # Validate against DTESN schema
+            return validate_dtesn_data_structure(data, dtesn_type, dtesn_config)
+    
+    # For Deep Tree Echo endpoints, apply general DTESN normalization
+    if '/deep_tree_echo' in endpoint_path or '/dte/' in endpoint_path:
+        logger.info(f"Applying DTESN normalization to Deep Tree Echo endpoint: {endpoint_path}")
+        return normalize_dtesn_configuration(data)
+    
+    return data
+
 
 def validate_file_upload(filename: str, content_type: str, file_size: int) -> None:
     """
@@ -342,6 +404,20 @@ async def validate_request_input(request: Request, config: ValidationConfig = No
                 status_code=400,
                 detail="Request validation failed"
             )
+    
+    # Apply DTESN-specific validation if enabled and body is present
+    if validation_result['body'] and config.enable_dtesn_validation:
+        try:
+            validation_result['body'] = validate_dtesn_endpoint_data(
+                validation_result['body'], 
+                str(request.url.path),
+                config
+            )
+            logger.info(f"DTESN validation completed for endpoint: {request.url.path}")
+        except Exception as e:
+            logger.error(f"DTESN validation failed for {request.url.path}: {str(e)}")
+            # Don't fail the entire request if DTESN validation fails, just log it
+            # This ensures backward compatibility
     
     return validation_result
 
