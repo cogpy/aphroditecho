@@ -19,6 +19,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from aphrodite.endpoints.deep_tree_echo.dtesn_processor import DTESNProcessor
+from aphrodite.endpoints.deep_tree_echo.batch_manager import BatchConfiguration
+from aphrodite.endpoints.deep_tree_echo.load_integration import get_batch_load_function
 
 logger = logging.getLogger(__name__)
 
@@ -520,6 +522,18 @@ async def stream_process_dtesn(
             if buffer_size > max_buffer_size // 2:
                 await asyncio.sleep(0.1)  # Brief pause to allow client to catch up
 
+            # Send pre-processing heartbeat for long operations
+            if len(request.input_data) > 50000:  # 50KB threshold for heartbeat
+                heartbeat_message = {
+                    "status": "processing_heartbeat",
+                    "request_id": request_id,
+                    "timestamp": time.time(),
+                    "message": "Long-running operation in progress",
+                    "estimated_completion_sec": len(request.input_data) / 10000,
+                    "server_rendered": True
+                }
+                yield f'data: {json.dumps(heartbeat_message)}\n\n'
+            
             # Process through DTESN with enhanced concurrent processing
             result = await processor.process(
                 input_data=request.input_data,
@@ -693,6 +707,8 @@ async def priority_process_dtesn(
 async def stream_chunks_dtesn(
     request: DTESNRequest,
     chunk_size: int = Field(default=1024, ge=128, le=8192, description="Processing chunk size"),
+    enable_compression: bool = Field(default=True, description="Enable response compression"),
+    timeout_prevention: bool = Field(default=True, description="Enable timeout prevention"),
     processor: DTESNProcessor = Depends(get_dtesn_processor)
 ) -> StreamingResponse:
     """
@@ -716,13 +732,16 @@ async def stream_chunks_dtesn(
                 input_data=request.input_data,
                 membrane_depth=request.membrane_depth,
                 esn_size=request.esn_size,
-                chunk_size=chunk_size
+                chunk_size=chunk_size,
+                enable_compression=enable_compression,
+                timeout_prevention=timeout_prevention
             ):
                 message = f'data: {json.dumps(chunk)}\n\n'
                 yield message
                 
-                # Add small delay between chunks for streaming effect
-                await asyncio.sleep(0.005)
+                # Adaptive delay based on chunk type
+                delay = 0.001 if chunk.get("type") == "heartbeat" else 0.005
+                await asyncio.sleep(delay)
                 
         except Exception as e:
             logger.error(f"Chunk streaming error: {e}")
@@ -745,6 +764,88 @@ async def stream_chunks_dtesn(
             "X-Backpressure-Enabled": "true",
             "X-Async-Processing": "enhanced"
         }
+    )
+
+
+@router.post("/stream_large_dataset")
+async def stream_large_dataset_dtesn(
+    request: DTESNRequest,
+    max_chunk_size: int = Field(default=4096, ge=512, le=16384, description="Maximum chunk size for large datasets"),
+    compression_level: int = Field(default=1, ge=0, le=3, description="Compression level (0=none, 3=max)"),
+    processor: DTESNProcessor = Depends(get_dtesn_processor)
+) -> StreamingResponse:
+    """
+    Optimized streaming endpoint for large datasets with advanced compression and timeout prevention.
+    
+    Specifically designed for datasets larger than 1MB with aggressive optimization techniques:
+    - Adaptive chunking based on dataset size
+    - Configurable compression levels
+    - Enhanced timeout prevention with 20-second heartbeats
+    - Minimal serialization overhead
+    - Throughput-optimized processing
+    
+    Args:
+        request: DTESN processing request with large input data
+        max_chunk_size: Maximum size for processing chunks
+        compression_level: Response compression level (0-3)
+        processor: DTESN processor instance
+        
+    Returns:
+        Highly optimized streaming response for large datasets
+    """
+    
+    async def generate_large_dataset_stream():
+        try:
+            async for chunk in processor.process_large_dataset_stream(
+                input_data=request.input_data,
+                membrane_depth=request.membrane_depth,
+                esn_size=request.esn_size,
+                max_chunk_size=max_chunk_size,
+                compression_level=compression_level
+            ):
+                # Format as SSE with minimal overhead
+                if chunk.get("type") == "compressed_metadata":
+                    message = f'event: metadata\ndata: {json.dumps(chunk)}\n\n'
+                elif chunk.get("type") == "compressed_chunk":
+                    message = f'event: chunk\ndata: {json.dumps(chunk)}\n\n'
+                elif chunk.get("type") == "large_dataset_heartbeat":
+                    message = f'event: heartbeat\ndata: {json.dumps(chunk)}\n\n'
+                elif chunk.get("type") == "compressed_completion":
+                    message = f'event: completion\ndata: {json.dumps(chunk)}\n\n'
+                else:
+                    message = f'data: {json.dumps(chunk)}\n\n'
+                
+                yield message
+                
+                # Minimal delay for maximum throughput
+                await asyncio.sleep(0.001)
+                
+        except Exception as e:
+            logger.error(f"Large dataset streaming error: {e}")
+            error_chunk = {
+                "type": "large_dataset_error",
+                "error": str(e),
+                "timestamp": time.time(),
+                "recoverable": False
+            }
+            yield f'event: error\ndata: {json.dumps(error_chunk)}\n\n'
+    
+    # Enhanced headers for large dataset streaming
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive", 
+        "X-Server-Rendered": "true",
+        "X-Large-Dataset-Optimized": "true",
+        "X-Max-Chunk-Size": str(max_chunk_size),
+        "X-Compression-Level": str(compression_level),
+        "X-Timeout-Prevention": "enhanced",
+        "X-Stream-Type": "large-dataset"
+    }
+    
+    return StreamingResponse(
+        generate_large_dataset_stream(),
+        media_type="text/event-stream",
+        headers=headers
     )
 
 
@@ -886,10 +987,9 @@ async def get_load_balancer_status(request: Request) -> Dict[str, Any]:
         return {
             "status": "error",
             "error": str(e),
-            "timestamp": current_time
+            "timestamp": current_time,
             "X-Concurrent-Processing": "true"
         }
-    )
 
 
 @router.get("/engine_integration")
@@ -1234,3 +1334,243 @@ async def get_recovery_statistics() -> Dict[str, Any]:
         },
         "server_rendered": True
     }
+# Dynamic Batching Endpoints
+
+class DynamicBatchRequest(BaseModel):
+    """Request model for dynamic batch processing."""
+    
+    input_data: str
+    membrane_depth: Optional[int] = Field(default=4, ge=1, le=16)
+    esn_size: Optional[int] = Field(default=512, ge=32, le=4096)
+    priority: int = Field(default=1, ge=0, le=2, description="Request priority (0=highest, 2=lowest)")
+    timeout: Optional[float] = Field(default=None, ge=1.0, le=300.0)
+    enable_batching: bool = Field(default=True, description="Enable dynamic batching")
+
+
+class BatchMetricsResponse(BaseModel):
+    """Response model for batch processing metrics."""
+    
+    status: str
+    batching_enabled: bool
+    current_batch_size: Optional[int]
+    pending_requests: int
+    metrics: Dict[str, Any]
+    server_load: Dict[str, Any]
+    performance_stats: Dict[str, Any]
+
+
+@router.post("/process_with_batching", response_model=DTESNResponse)
+async def process_with_dynamic_batching(
+    request_data: DynamicBatchRequest,
+    request: Request,
+    processor: DTESNProcessor = Depends(get_dtesn_processor)
+) -> Union[DTESNResponse, HTMLResponse]:
+    """
+    Process input using intelligent dynamic batching for optimal throughput.
+    
+    Automatically batches requests based on server load, request patterns,
+    and performance metrics to maximize throughput while maintaining responsiveness.
+    Features adaptive batch sizing and load-aware processing optimization.
+    """
+    start_time = time.time()
+    
+    try:
+        # Ensure batch manager is configured
+        if not hasattr(processor, '_batch_manager') or not processor._batch_manager:
+            # Configure batch manager if not already done
+            load_tracker = get_batch_load_function(request.app.state)
+            batch_config = BatchConfiguration(
+                target_batch_size=8,
+                max_batch_size=32,
+                max_batch_wait_ms=50.0,
+                enable_adaptive_sizing=True
+            )
+            
+            # Reinitialize processor with batching
+            processor._batch_manager = DynamicBatchManager(
+                config=batch_config,
+                load_tracker=load_tracker
+            )
+            processor._batch_manager.set_dtesn_processor(processor)
+            processor._batch_manager_started = False
+
+        if request_data.enable_batching:
+            # Process using dynamic batching
+            result = await processor.process_with_dynamic_batching(
+                input_data=request_data.input_data,
+                membrane_depth=request_data.membrane_depth,
+                esn_size=request_data.esn_size,
+                priority=request_data.priority,
+                timeout=request_data.timeout
+            )
+        else:
+            # Process directly without batching
+            result = await processor.process(
+                input_data=request_data.input_data,
+                membrane_depth=request_data.membrane_depth,
+                esn_size=request_data.esn_size,
+                enable_concurrent=True
+            )
+
+        processing_time = time.time() - start_time
+
+        # Get batching metrics
+        batch_metrics = processor.get_batching_metrics()
+        current_batch_size = processor.get_current_batch_size()
+        pending_count = await processor.get_pending_batch_count()
+
+        # Prepare performance metrics
+        performance_metrics = {
+            "total_processing_time_ms": processing_time * 1000,
+            "dtesn_processing_time_ms": result.processing_time_ms,
+            "overhead_ms": (processing_time * 1000) - result.processing_time_ms,
+            "throughput_chars_per_second": len(request_data.input_data) / processing_time if processing_time > 0 else 0,
+            "batching_enabled": request_data.enable_batching,
+            "current_batch_size": current_batch_size,
+            "pending_requests": pending_count
+        }
+
+        # Add batch metrics if available
+        if batch_metrics:
+            performance_metrics.update({
+                "batch_throughput_improvement": batch_metrics.throughput_improvement,
+                "avg_batch_size": batch_metrics.avg_batch_size,
+                "avg_server_load": batch_metrics.avg_server_load,
+                "requests_processed": batch_metrics.requests_processed
+            })
+
+        response_data = DTESNResponse(
+            status="success",
+            result=result.to_dict(),
+            processing_time_ms=result.processing_time_ms,
+            membrane_layers=result.membrane_layers,
+            server_rendered=True,
+            engine_integration=result.engine_integration,
+            performance_metrics=performance_metrics
+        )
+
+        if wants_html(request):
+            return templates.TemplateResponse(
+                "batch_process_result.html",
+                {
+                    "request": request,
+                    "data": response_data.dict(),
+                    "input_data": request_data.input_data,
+                    "batching_enabled": request_data.enable_batching,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+        else:
+            return response_data
+
+    except Exception as e:
+        logger.error(f"Dynamic batch processing error: {e}")
+        error_time = time.time() - start_time
+        error_detail = {
+            "error": f"Dynamic batch processing failed: {e}",
+            "processing_time_ms": error_time * 1000,
+            "batching_enabled": request_data.enable_batching,
+            "server_rendered": True
+        }
+
+        if wants_html(request):
+            return templates.TemplateResponse(
+                "batch_process_result.html",
+                {
+                    "request": request,
+                    "data": {"status": "error", "error": str(e)},
+                    "input_data": request_data.input_data,
+                    "batching_enabled": request_data.enable_batching,
+                    "timestamp": datetime.now().isoformat()
+                },
+                status_code=500
+            )
+        else:
+            raise HTTPException(status_code=500, detail=error_detail)
+
+
+@router.get("/batch_metrics", response_model=BatchMetricsResponse)
+async def get_batch_metrics(
+    request: Request,
+    processor: DTESNProcessor = Depends(get_dtesn_processor)
+) -> Union[BatchMetricsResponse, HTMLResponse]:
+    """
+    Get current dynamic batching metrics and performance statistics.
+    
+    Provides comprehensive metrics about batch processing performance,
+    server load, throughput improvements, and system optimization status.
+    """
+    try:
+        # Get batch metrics
+        batch_metrics = processor.get_batching_metrics()
+        current_batch_size = processor.get_current_batch_size()
+        pending_count = await processor.get_pending_batch_count()
+        
+        # Get server load information
+        server_load = {}
+        if hasattr(request.app.state, 'server_load_metrics'):
+            server_load["active_requests"] = request.app.state.server_load_metrics
+        
+        # Prepare metrics data
+        metrics_data = {}
+        if batch_metrics:
+            metrics_data = {
+                "requests_processed": batch_metrics.requests_processed,
+                "avg_batch_size": batch_metrics.avg_batch_size,
+                "avg_processing_time_ms": batch_metrics.avg_processing_time_ms,
+                "throughput_improvement": batch_metrics.throughput_improvement,
+                "avg_server_load": batch_metrics.avg_server_load,
+                "batch_utilization": batch_metrics.batch_utilization,
+                "avg_batch_wait_time": batch_metrics.avg_batch_wait_time,
+                "last_updated": batch_metrics.last_updated
+            }
+
+        # Get processing stats
+        performance_stats = processor.get_processing_stats() if hasattr(processor, 'get_processing_stats') else {}
+
+        response_data = BatchMetricsResponse(
+            status="success",
+            batching_enabled=processor._batch_manager is not None,
+            current_batch_size=current_batch_size,
+            pending_requests=pending_count,
+            metrics=metrics_data,
+            server_load=server_load,
+            performance_stats=performance_stats
+        )
+
+        if wants_html(request):
+            return templates.TemplateResponse(
+                "batch_metrics.html",
+                {
+                    "request": request,
+                    "data": response_data.dict(),
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+        else:
+            return response_data
+
+    except Exception as e:
+        logger.error(f"Batch metrics retrieval error: {e}")
+        error_response = BatchMetricsResponse(
+            status="error",
+            batching_enabled=False,
+            current_batch_size=None,
+            pending_requests=0,
+            metrics={"error": str(e)},
+            server_load={},
+            performance_stats={}
+        )
+
+        if wants_html(request):
+            return templates.TemplateResponse(
+                "batch_metrics.html",
+                {
+                    "request": request,
+                    "data": error_response.dict(),
+                    "timestamp": datetime.now().isoformat()
+                },
+                status_code=500
+            )
+        else:
+            raise HTTPException(status_code=500, detail=error_response.dict())

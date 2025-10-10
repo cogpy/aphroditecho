@@ -40,12 +40,18 @@ except ImportError as e:
 
 
 class DTESNEnhancedRequest(BaseModel):
-    """Enhanced request model with DTESN processing options."""
+    """Enhanced request model with DTESN processing and caching options."""
     
     enable_dtesn: bool = Field(default=False, description="Enable DTESN processing")
     dtesn_membrane_depth: int = Field(default=4, ge=1, le=16, description="DTESN membrane depth")
     dtesn_esn_size: int = Field(default=512, ge=32, le=4096, description="DTESN ESN reservoir size")
     dtesn_processing_mode: str = Field(default="server_side", description="DTESN processing mode")
+    
+    # Caching options
+    enable_caching: bool = Field(default=True, description="Enable server-side caching")
+    cache_strategy: str = Field(default="balanced", description="Caching strategy (aggressive/balanced/conservative/dynamic)")
+    cache_ttl_seconds: Optional[int] = Field(default=None, description="Custom TTL for cache entries")
+    invalidation_tags: Optional[Set[str]] = Field(default=None, description="Tags for content-based cache invalidation")
 
 
 class DTESNIntegrationMixin:
@@ -80,23 +86,30 @@ class DTESNIntegrationMixin:
     async def _preprocess_with_dtesn(
         self,
         request_data: Union[Dict[str, Any], str],
-        dtesn_options: Optional[DTESNEnhancedRequest] = None
+        dtesn_options: Optional[DTESNEnhancedRequest] = None,
+        model_id: str = "default"
     ) -> Dict[str, Any]:
         """
-        Preprocess request data through DTESN if enabled.
+        Preprocess request data through DTESN with intelligent server-side caching.
         
         Args:
             request_data: Input data to preprocess
             dtesn_options: DTESN processing options
+            model_id: Model identifier for caching
             
         Returns:
-            Dictionary containing original and DTESN-processed data
+            Dictionary containing original and DTESN-processed data with cache metadata
         """
         result = {
             "original_data": request_data,
             "dtesn_processed": False,
             "dtesn_result": None,
-            "processing_metadata": {}
+            "processing_metadata": {},
+            "cache_metadata": {
+                "cache_hit": False,
+                "cache_enabled": False,
+                "performance_improvement": 0.0
+            }
         }
         
         # Check if DTESN processing is requested and available
@@ -110,7 +123,48 @@ class DTESNIntegrationMixin:
                 logger.warning("No text found for DTESN processing")
                 return result
             
-            # Process through DTESN
+            # Prepare DTESN configuration for caching
+            dtesn_config = {
+                "membrane_depth": dtesn_options.dtesn_membrane_depth,
+                "esn_size": dtesn_options.dtesn_esn_size,
+                "processing_mode": dtesn_options.dtesn_processing_mode
+            }
+            
+            cache_manager = get_cache_manager()
+            cached_result = None
+            
+            # Try to retrieve from cache if enabled
+            if dtesn_options.enable_caching and cache_manager:
+                result["cache_metadata"]["cache_enabled"] = True
+                cache_start = time.time()
+                
+                cached_result = await cache_manager.get_cached_result(
+                    input_data=input_text,
+                    model_id=model_id,
+                    dtesn_config=dtesn_config
+                )
+                
+                if cached_result:
+                    cache_retrieval_time = (time.time() - cache_start) * 1000
+                    cached_data, cached_metadata = cached_result
+                    
+                    result.update({
+                        "dtesn_processed": True,
+                        "dtesn_result": cached_data,
+                        "processing_metadata": cached_metadata,
+                        "cache_metadata": {
+                            "cache_hit": True,
+                            "cache_enabled": True,
+                            "cache_retrieval_time_ms": cache_retrieval_time,
+                            "original_processing_time_ms": cached_metadata.get("processing_time_ms", 0),
+                            "performance_improvement": max(0.0, 1.0 - (cache_retrieval_time / max(cached_metadata.get("processing_time_ms", cache_retrieval_time), 1.0)))
+                        }
+                    })
+                    
+                    logger.info(f"DTESN cache hit - retrieved in {cache_retrieval_time:.2f}ms (vs {cached_metadata.get('processing_time_ms', 0):.2f}ms original)")
+                    return result
+            
+            # Cache miss or caching disabled - process through DTESN
             start_time = time.time()
             dtesn_result = await self.dtesn_processor.process(
                 input_data=input_text,
@@ -118,18 +172,41 @@ class DTESNIntegrationMixin:
                 esn_size=dtesn_options.dtesn_esn_size
             )
             
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            processing_metadata = {
+                "processing_time_ms": processing_time_ms,
+                "membrane_depth": dtesn_options.dtesn_membrane_depth,
+                "esn_size": dtesn_options.dtesn_esn_size,
+                "processing_mode": dtesn_options.dtesn_processing_mode,
+                "cache_miss": cache_manager is not None and dtesn_options.enable_caching
+            }
+            
+            dtesn_result_dict = dtesn_result.to_dict() if hasattr(dtesn_result, 'to_dict') else dtesn_result
+            
             result.update({
                 "dtesn_processed": True,
-                "dtesn_result": dtesn_result.to_dict(),
-                "processing_metadata": {
-                    "processing_time_ms": (time.time() - start_time) * 1000,
-                    "membrane_depth": dtesn_options.dtesn_membrane_depth,
-                    "esn_size": dtesn_options.dtesn_esn_size,
-                    "processing_mode": dtesn_options.dtesn_processing_mode
-                }
+                "dtesn_result": dtesn_result_dict,
+                "processing_metadata": processing_metadata
             })
             
-            logger.info(f"DTESN preprocessing completed in {result['processing_metadata']['processing_time_ms']:.2f}ms")
+            # Cache the result if caching is enabled
+            if dtesn_options.enable_caching and cache_manager:
+                content_tags = dtesn_options.invalidation_tags or {"dtesn", f"model_{model_id}"}
+                
+                await cache_manager.cache_result(
+                    input_data=input_text,
+                    model_id=model_id,
+                    dtesn_config=dtesn_config,
+                    result=dtesn_result_dict,
+                    metadata=processing_metadata,
+                    processing_time_ms=processing_time_ms,
+                    content_tags=content_tags
+                )
+                
+                logger.debug(f"Cached DTESN result with tags: {content_tags}")
+            
+            logger.info(f"DTESN preprocessing completed in {processing_time_ms:.2f}ms")
             
         except Exception as e:
             logger.error(f"DTESN preprocessing failed: {e}")
