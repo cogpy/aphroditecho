@@ -13,6 +13,15 @@ from dataclasses import asdict
 
 try:
     from .performance_monitor import UnifiedPerformanceMonitor, PerformanceAlert, AlertSeverity
+
+# Import DTESN cache manager for integration
+try:
+    from aphrodite.endpoints.openai.dtesn_cache_manager import get_cache_manager, DTESNServerSideCacheManager
+    DTESN_CACHE_AVAILABLE = True
+except ImportError:
+    DTESN_CACHE_AVAILABLE = False
+    get_cache_manager = None
+    DTESNServerSideCacheManager = None
 except ImportError:
     from performance_monitor import UnifiedPerformanceMonitor, PerformanceAlert, AlertSeverity
 
@@ -32,6 +41,47 @@ class EchoDashIntegration:
         self.monitor.register_alert_handler(self._handle_echo_alert)
         
         logger.info(f"EchoDash integration initialized, stats_dir: {self.stats_dir}")
+    
+    def _get_dtesn_cache_metrics(self) -> Dict[str, Any]:
+        """Get DTESN cache performance metrics for dashboard integration"""
+        if not DTESN_CACHE_AVAILABLE:
+            return {
+                'available': False,
+                'error': 'DTESN cache manager not available'
+            }
+        
+        try:
+            cache_manager = get_cache_manager()
+            if not cache_manager:
+                return {
+                    'available': False,
+                    'error': 'DTESN cache manager not initialized'
+                }
+            
+            cache_metrics = cache_manager.get_performance_metrics()
+            
+            return {
+                'available': True,
+                'hit_ratio': cache_metrics['hit_ratio'],
+                'performance_improvement_percent': cache_metrics['performance_improvement_percent'],
+                'total_requests': cache_metrics['total_requests'],
+                'cache_hits': cache_metrics['cache_hits'],
+                'cache_misses': cache_metrics['cache_misses'],
+                'memory_usage_mb': cache_metrics['memory_usage_bytes'] / (1024 * 1024),
+                'memory_entries': cache_metrics['cache_levels']['memory_entries'],
+                'compressed_entries': cache_metrics['cache_levels']['compressed_entries'],
+                'redis_enabled': cache_metrics['cache_levels']['redis_enabled'],
+                'cache_strategy': cache_metrics['cache_strategy'],
+                'avg_processing_time_ms': cache_metrics['avg_processing_time_ms'],
+                'avg_cache_retrieval_time_ms': cache_metrics['avg_cache_retrieval_time_ms']
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get DTESN cache metrics: {e}")
+            return {
+                'available': False,
+                'error': f'Failed to retrieve metrics: {str(e)}'
+            }
     
     def _handle_echo_alert(self, alert: PerformanceAlert) -> None:
         """Handle performance alerts for echo.dash integration"""
@@ -85,6 +135,7 @@ class EchoDashIntegration:
                 'fitness_improvement': current_metrics.fitness_improvement,
                 'agent_performance': current_metrics.agent_performance
             },
+            'dtesn_cache': self._get_dtesn_cache_metrics(),
             'embodied': {
                 'sensory_motor_latency': current_metrics.sensory_motor_latency,
                 'proprioceptive_accuracy': current_metrics.proprioceptive_accuracy
