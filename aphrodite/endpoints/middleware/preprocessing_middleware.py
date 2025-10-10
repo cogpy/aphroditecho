@@ -7,7 +7,7 @@ to improve request processing efficiency.
 
 import asyncio
 import time
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Set
 from dataclasses import dataclass, field
 from collections import defaultdict
 
