@@ -7,7 +7,7 @@ and improve network transfer times.
 
 import gzip
 import io
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Callable, Optional, Set
 from dataclasses import dataclass, field
 
 from fastapi import Request, Response

@@ -8,7 +8,7 @@ to minimize response latency and improve throughput.
 import hashlib
 import json
 import time
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional
 from dataclasses import dataclass, field
 
 from fastapi import Request, Response
