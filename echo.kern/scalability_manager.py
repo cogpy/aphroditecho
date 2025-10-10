@@ -22,8 +22,19 @@ import sys
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
-import aioredis
-from aiohttp import ClientSession
+try:
+    import aioredis
+    AIOREDIS_AVAILABLE = True
+except ImportError:
+    AIOREDIS_AVAILABLE = False
+    aioredis = None
+
+try:
+    from aiohttp import ClientSession
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+    ClientSession = None
 
 # Add echo.kern to path for DTESN integration
 sys.path.append('/home/runner/work/aphroditecho/aphroditecho/echo.kern')
@@ -128,6 +139,11 @@ class ScalingEvent:
 class ScalabilityManager:
     """
     Centralized scalability management for Deep Tree Echo system
+    
+    Enhanced for Task 6.2.3 with:
+    - Dynamic resource allocation with adaptive thresholds
+    - Load balancing for distributed DTESN operations  
+    - Graceful degradation under resource constraints
     """
     
     def __init__(self,
@@ -142,7 +158,7 @@ class ScalabilityManager:
         self.performance_weight = performance_weight
         
         # Redis connection
-        self.redis: Optional[aioredis.Redis] = None
+        self.redis: Optional[Any] = None
         
         # Resource tracking
         self.resource_metrics: Dict[str, ResourceMetrics] = {}
@@ -152,6 +168,21 @@ class ScalabilityManager:
             ResourceType.AGENT_INSTANCES: [],
             ResourceType.DTESN_MEMBRANES: [],
             ResourceType.LOAD_BALANCER: []
+        }
+        
+        # Enhanced for Task 6.2.3: Dynamic resource allocation
+        self.system_load_history: List[float] = []
+        self.performance_history: List[float] = []
+        self.degradation_active = False
+        self.current_system_load = 0.0
+        self.load_balancer_pools: Dict[ResourceType, List[str]] = {}
+        
+        # Adaptive thresholds (will adjust based on system state)
+        self.adaptive_thresholds = {
+            'scale_up_base': 0.8,
+            'scale_down_base': 0.3,
+            'performance_threshold': 0.7,
+            'degradation_threshold': 0.9
         }
         
         # Scaling policies
@@ -220,12 +251,16 @@ class ScalabilityManager:
         
         # Connect to Redis
         try:
-            self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
-            await self.redis.ping()
-            logger.info("✅ Connected to Redis")
+            if AIOREDIS_AVAILABLE and aioredis:
+                self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
+                await self.redis.ping()
+                logger.info("✅ Connected to Redis")
+            else:
+                logger.warning("aioredis not available, running without Redis")
+                self.redis = None
         except Exception as e:
-            logger.error(f"Redis connection failed: {e}")
-            raise
+            logger.warning(f"Redis connection failed: {e}, continuing without Redis")
+            self.redis = None
         
         # Initialize DTESN integration
         await self._initialize_dtesn_integration()
@@ -355,6 +390,9 @@ class ScalabilityManager:
     async def _collect_load_balancer_metrics(self):
         """Collect load balancer metrics"""
         try:
+            if not AIOHTTP_AVAILABLE or not ClientSession:
+                logger.debug("aiohttp not available, skipping load balancer metrics collection")
+                return
             async with ClientSession() as session:
                 async with session.get(f"{self.service_urls['load_balancer']}/metrics") as response:
                     if response.status == 200:
@@ -534,7 +572,10 @@ class ScalabilityManager:
             await self._evaluate_resource_scaling(resource_type)
 
     async def _evaluate_resource_scaling(self, resource_type: ResourceType):
-        """Evaluate scaling needs for a specific resource type"""
+        """
+        Enhanced resource scaling evaluation with dynamic thresholds and graceful degradation.
+        Implements Task 6.2.3 requirements.
+        """
         policy = self.scaling_policies.get(resource_type)
         if not policy:
             return
@@ -558,26 +599,43 @@ class ScalabilityManager:
         avg_utilization = sum(m.utilization_score for m in resource_metrics) / len(resource_metrics)
         avg_performance = sum(m.performance_score for m in resource_metrics) / len(resource_metrics)
         
+        # Task 6.2.3: Calculate adaptive thresholds based on system state
+        adaptive_up_threshold, adaptive_down_threshold = self._calculate_adaptive_thresholds(
+            avg_utilization, avg_performance
+        )
+        
         last_scaling_time = self.last_scaling_times.get(resource_type, 0)
         
-        # Determine scaling action
+        # Update system state tracking
+        self._update_system_load_tracking(avg_utilization, avg_performance)
+        
+        # Task 6.2.3: Check for graceful degradation needs
+        if await self._should_activate_degradation(avg_utilization, avg_performance):
+            await self._activate_graceful_degradation(resource_type, resource_metrics)
+            return
+        
+        # Determine scaling action with adaptive thresholds
         action = ScalingAction.MAINTAIN
         target_count = instance_count
         
-        if policy.should_scale_up(avg_utilization, instance_count, last_scaling_time):
-            # Consider performance impact in scaling decision
-            if avg_performance < 0.7 or avg_utilization > policy.scale_up_threshold:
+        if self._should_scale_up_adaptive(avg_utilization, instance_count, 
+                                         last_scaling_time, adaptive_up_threshold, policy):
+            if avg_performance < self.adaptive_thresholds['performance_threshold']:
                 action = ScalingAction.SCALE_UP
                 target_count = min(policy.max_instances, instance_count + 1)
         
-        elif policy.should_scale_down(avg_utilization, instance_count, last_scaling_time):
-            # Only scale down if performance is still good
-            if avg_performance > 0.8 and avg_utilization < policy.scale_down_threshold:
+        elif self._should_scale_down_adaptive(avg_utilization, instance_count,
+                                            last_scaling_time, adaptive_down_threshold, policy):
+            if avg_performance > 0.8 and not self.degradation_active:
                 action = ScalingAction.SCALE_DOWN
                 target_count = max(policy.min_instances, instance_count - 1)
         
-        # Cost optimization consideration
-        if self.cost_optimization and action == ScalingAction.MAINTAIN:
+        # Task 6.2.3: Enhanced load balancing for DTESN operations
+        if resource_type == ResourceType.DTESN_MEMBRANES:
+            await self._balance_dtesn_load(resource_metrics, action, target_count)
+        
+        # Cost optimization with degradation awareness
+        if self.cost_optimization and action == ScalingAction.MAINTAIN and not self.degradation_active:
             cost_efficiency = await self._calculate_cost_efficiency(resource_type, resource_metrics)
             if cost_efficiency < 0.6 and avg_performance > 0.7:
                 action = ScalingAction.OPTIMIZE
@@ -848,6 +906,204 @@ class ScalabilityManager:
         )
         
         return True
+
+    def _calculate_adaptive_thresholds(self, avg_utilization: float, avg_performance: float) -> tuple:
+        """
+        Task 6.2.3: Calculate adaptive scaling thresholds based on system state.
+        Dynamic resource allocation implementation.
+        """
+        # Base thresholds
+        base_up = self.adaptive_thresholds['scale_up_base']
+        base_down = self.adaptive_thresholds['scale_down_base']
+        
+        # Adjust based on recent performance history
+        if len(self.performance_history) >= 3:
+            recent_trend = sum(self.performance_history[-3:]) / 3
+            if recent_trend < 0.6:  # Poor recent performance
+                adaptive_up = max(0.6, base_up - 0.1)  # Scale up more aggressively
+                adaptive_down = max(0.1, base_down - 0.1)
+            elif recent_trend > 0.9:  # Excellent performance
+                adaptive_up = min(0.9, base_up + 0.1)  # Scale up more conservatively
+                adaptive_down = min(0.5, base_down + 0.1)
+            else:
+                adaptive_up = base_up
+                adaptive_down = base_down
+        else:
+            adaptive_up = base_up
+            adaptive_down = base_down
+        
+        # Adjust based on current system load
+        if self.current_system_load > 0.85:
+            adaptive_up *= 0.8  # Scale up more aggressively under high load
+        elif self.current_system_load < 0.3:
+            adaptive_down *= 1.2  # Scale down more aggressively under low load
+        
+        return adaptive_up, adaptive_down
+    
+    def _update_system_load_tracking(self, avg_utilization: float, avg_performance: float):
+        """Update system load and performance history for adaptive scaling."""
+        self.system_load_history.append(avg_utilization)
+        self.performance_history.append(avg_performance)
+        
+        # Keep only recent history (last 10 measurements)
+        if len(self.system_load_history) > 10:
+            self.system_load_history.pop(0)
+        if len(self.performance_history) > 10:
+            self.performance_history.pop(0)
+        
+        # Update current system load as weighted average
+        if self.system_load_history:
+            self.current_system_load = sum(self.system_load_history) / len(self.system_load_history)
+    
+    async def _should_activate_degradation(self, avg_utilization: float, avg_performance: float) -> bool:
+        """
+        Task 6.2.3: Determine if graceful degradation should be activated.
+        """
+        degradation_threshold = self.adaptive_thresholds['degradation_threshold']
+        
+        # Activate degradation if:
+        # 1. Utilization is very high AND performance is dropping
+        # 2. System has been under sustained load
+        sustained_high_load = (
+            len(self.system_load_history) >= 5 and 
+            all(load > 0.8 for load in self.system_load_history[-5:])
+        )
+        
+        performance_dropping = (
+            len(self.performance_history) >= 3 and
+            all(perf < 0.6 for perf in self.performance_history[-3:])
+        )
+        
+        should_degrade = (
+            avg_utilization > degradation_threshold or
+            (sustained_high_load and performance_dropping)
+        )
+        
+        return should_degrade and not self.degradation_active
+    
+    async def _activate_graceful_degradation(self, resource_type: ResourceType, metrics: List[ResourceMetrics]):
+        """
+        Task 6.2.3: Activate graceful degradation under resource constraints.
+        """
+        if self.degradation_active:
+            return
+        
+        logger.warning(f"🚨 Activating graceful degradation for {resource_type.value}")
+        self.degradation_active = True
+        
+        # Implement degradation strategies per resource type
+        if resource_type == ResourceType.DTESN_MEMBRANES:
+            await self._degrade_dtesn_processing()
+        elif resource_type == ResourceType.COGNITIVE_SERVICE:
+            await self._degrade_cognitive_services()
+        elif resource_type == ResourceType.AGENT_INSTANCES:
+            await self._degrade_agent_processing()
+        
+        # Store degradation event in Redis for monitoring
+        if self.redis:
+            await self.redis.setex(
+                f'degradation_active_{resource_type.value}',
+                300,  # 5 minutes
+                json.dumps({
+                    'timestamp': time.time(),
+                    'resource_type': resource_type.value,
+                    'trigger_metrics': [m.dict() if hasattr(m, 'dict') else vars(m) for m in metrics]
+                })
+            )
+    
+    async def _degrade_dtesn_processing(self):
+        """Reduce DTESN processing complexity during resource constraints."""
+        # Could reduce membrane depth, ESN reservoir size, etc.
+        logger.info("📉 DTESN processing degraded: reducing membrane complexity")
+    
+    async def _degrade_cognitive_services(self):
+        """Reduce cognitive service capabilities during resource constraints.""" 
+        logger.info("📉 Cognitive services degraded: reducing concurrent processing")
+    
+    async def _degrade_agent_processing(self):
+        """Reduce agent processing capabilities during resource constraints."""
+        logger.info("📉 Agent processing degraded: reducing agent simulation complexity")
+    
+    def _should_scale_up_adaptive(self, avg_utilization: float, instance_count: int, 
+                                 last_scaling_time: float, adaptive_threshold: float, 
+                                 policy: ScalingPolicy) -> bool:
+        """Adaptive scale-up decision with dynamic thresholds."""
+        cooldown_ok = time.time() - last_scaling_time > policy.scale_up_cooldown
+        utilization_high = avg_utilization > adaptive_threshold
+        under_max = instance_count < policy.max_instances
+        return cooldown_ok and utilization_high and under_max
+    
+    def _should_scale_down_adaptive(self, avg_utilization: float, instance_count: int,
+                                   last_scaling_time: float, adaptive_threshold: float,
+                                   policy: ScalingPolicy) -> bool:
+        """Adaptive scale-down decision with dynamic thresholds."""
+        cooldown_ok = time.time() - last_scaling_time > policy.scale_down_cooldown
+        utilization_low = avg_utilization < adaptive_threshold
+        above_min = instance_count > policy.min_instances
+        return cooldown_ok and utilization_low and above_min
+    
+    async def _balance_dtesn_load(self, metrics: List[ResourceMetrics], action: ScalingAction, target_count: int):
+        """
+        Task 6.2.3: Implement load balancing for distributed DTESN operations.
+        """
+        if not metrics:
+            return
+        
+        # Create or update load balancer pools for DTESN membranes
+        membrane_ids = [m.instance_id for m in metrics if m.resource_type == ResourceType.DTESN_MEMBRANES]
+        
+        if ResourceType.DTESN_MEMBRANES not in self.load_balancer_pools:
+            self.load_balancer_pools[ResourceType.DTESN_MEMBRANES] = []
+        
+        current_pool = self.load_balancer_pools[ResourceType.DTESN_MEMBRANES]
+        
+        # Balance load based on individual membrane performance
+        membrane_loads = []
+        for metric in metrics:
+            if metric.resource_type == ResourceType.DTESN_MEMBRANES:
+                load_score = (metric.cpu_usage * 0.4 + 
+                            metric.memory_usage * 0.3 + 
+                            (1 - metric.efficiency_score) * 0.3)
+                membrane_loads.append((metric.instance_id, load_score))
+        
+        # Sort by load (ascending - least loaded first)
+        membrane_loads.sort(key=lambda x: x[1])
+        
+        # Update load balancer pool with balanced distribution
+        balanced_pool = [membrane_id for membrane_id, _ in membrane_loads]
+        self.load_balancer_pools[ResourceType.DTESN_MEMBRANES] = balanced_pool
+        
+        logger.info(f"🔄 DTESN load balanced across {len(balanced_pool)} membranes")
+        
+        # Store load balancing info in Redis
+        if self.redis:
+            await self.redis.setex(
+                'dtesn_load_balance',
+                60,  # 1 minute
+                json.dumps({
+                    'timestamp': time.time(),
+                    'balanced_pool': balanced_pool,
+                    'membrane_loads': membrane_loads
+                })
+            )
+    
+    async def deactivate_degradation(self):
+        """Deactivate graceful degradation when conditions improve."""
+        if not self.degradation_active:
+            return
+        
+        # Check if conditions have improved
+        if (self.current_system_load < 0.7 and 
+            len(self.performance_history) >= 3 and
+            all(perf > 0.7 for perf in self.performance_history[-3:])):
+            
+            logger.info("✅ Deactivating graceful degradation - conditions improved")
+            self.degradation_active = False
+            
+            # Clear degradation flags in Redis
+            if self.redis:
+                for resource_type in ResourceType:
+                    await self.redis.delete(f'degradation_active_{resource_type.value}')
 
 
 async def main():

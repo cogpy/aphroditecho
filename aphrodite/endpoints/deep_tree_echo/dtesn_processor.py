@@ -232,6 +232,12 @@ class DTESNProcessor:
             "batch_requests": 0,
         }
         
+        # Task 6.2.3: Load balancing and graceful degradation
+        self.load_balancer_enabled = True
+        self.degradation_active = False
+        self.membrane_pool = []
+        self.processing_queues = {}
+        self.current_load = 0.0
         # Enhanced async optimization components
         if self.enable_async_optimization:
             from .async_manager import AsyncConnectionPool, ConcurrencyManager, AsyncRequestQueue, ConnectionPoolConfig
@@ -520,6 +526,14 @@ class DTESNProcessor:
         Returns:
             DTESN processing result with enhanced concurrency metrics
         """
+        async with self._processing_semaphore:
+            self._processing_stats["total_requests"] += 1
+            self._processing_stats["concurrent_requests"] += 1
+            start_time = time.time()
+            
+            # Task 6.2.3: Select optimal membrane for load balancing
+            selected_membrane = await self._select_optimal_membrane()
+            self._update_processing_load(selected_membrane, "add")
         # Use enhanced concurrency manager if available
         if self.enable_async_optimization and self._concurrency_manager:
             async with self._concurrency_manager.throttle_request():
@@ -586,12 +600,25 @@ class DTESNProcessor:
         start_time = time.time()
 
             try:
+                # Task 6.2.3: Check for degradation conditions
+                if await self._check_degradation_conditions():
+                    await self._activate_degradation_mode()
+                else:
+                    await self._deactivate_degradation_mode()
+                
                 # Sync with engine state before processing
                 await self._sync_with_engine_state()
 
                 # Use provided parameters or engine-optimized defaults
-                depth = membrane_depth or self._get_optimal_membrane_depth()
-                size = esn_size or self._get_optimal_esn_size()
+                # Apply degradation if active
+                if self.degradation_active:
+                    depth = min(membrane_depth or self._get_optimal_membrane_depth(), 
+                               self.config.max_membrane_depth)
+                    size = min(esn_size or self._get_optimal_esn_size(),
+                              self.config.esn_reservoir_size)
+                else:
+                    depth = membrane_depth or self._get_optimal_membrane_depth()
+                    size = esn_size or self._get_optimal_esn_size()
 
                 # Enhanced server-side data fetching from engine components
                 engine_context = (
@@ -626,6 +653,8 @@ class DTESNProcessor:
                 raise
             finally:
                 self._processing_stats["concurrent_requests"] -= 1
+                # Task 6.2.3: Update load balancing tracking
+                self._update_processing_load(selected_membrane, "remove")
 
     def _get_optimal_membrane_depth(self) -> int:
         """
@@ -2092,6 +2121,107 @@ class DTESNProcessor:
             if self._connection_pool:
                 await self._connection_pool.stop()
                 logger.info("DTESN connection pool stopped")
+
+    async def _select_optimal_membrane(self) -> str:
+        """
+        Task 6.2.3: Select optimal membrane for load balancing.
+        Implements distributed load balancing for DTESN operations.
+        """
+        if not self.load_balancer_enabled or not self.membrane_pool:
+            return "membrane-default"
+        
+        # Simple round-robin selection with load awareness
+        min_load_membrane = None
+        min_load = float('inf')
+        
+        for membrane_id in self.membrane_pool:
+            current_queue_size = len(self.processing_queues.get(membrane_id, []))
+            if current_queue_size < min_load:
+                min_load = current_queue_size
+                min_load_membrane = membrane_id
+        
+        return min_load_membrane or "membrane-default"
+    
+    def _update_processing_load(self, membrane_id: str, operation: str):
+        """Update processing load tracking for load balancing."""
+        if membrane_id not in self.processing_queues:
+            self.processing_queues[membrane_id] = []
+        
+        if operation == "add":
+            self.processing_queues[membrane_id].append(time.time())
+        elif operation == "remove" and self.processing_queues[membrane_id]:
+            self.processing_queues[membrane_id].pop(0)
+        
+        # Update current load metric
+        total_queued = sum(len(queue) for queue in self.processing_queues.values())
+        self.current_load = total_queued / max(1, len(self.membrane_pool) or 1)
+    
+    async def _check_degradation_conditions(self) -> bool:
+        """
+        Task 6.2.3: Check if graceful degradation should be activated.
+        """
+        # Check current system load and processing stats
+        concurrent_ratio = self._processing_stats["concurrent_requests"] / self.max_concurrent_processes
+        error_rate = (self._processing_stats["failed_requests"] / 
+                     max(1, self._processing_stats["total_requests"]))
+        
+        # Activate degradation if:
+        # - High concurrent load (>90%) AND
+        # - High error rate (>10%) OR high processing queue load
+        should_degrade = (
+            concurrent_ratio > 0.9 and 
+            (error_rate > 0.1 or self.current_load > 2.0)
+        )
+        
+        return should_degrade
+    
+    async def _activate_degradation_mode(self):
+        """
+        Task 6.2.3: Activate graceful degradation for DTESN processing.
+        """
+        if self.degradation_active:
+            return
+        
+        logger.warning("🚨 DTESN Processor: Activating graceful degradation mode")
+        self.degradation_active = True
+        
+        # Reduce processing complexity
+        original_depth = self.config.max_membrane_depth
+        original_reservoir = self.config.esn_reservoir_size
+        original_order = self.config.bseries_max_order
+        
+        self.config.max_membrane_depth = max(2, original_depth - 2)
+        self.config.esn_reservoir_size = max(50, int(original_reservoir * 0.7))
+        self.config.bseries_max_order = max(2, original_order - 1)
+        
+        # Reduce concurrent processing
+        self.max_concurrent_processes = max(2, int(self.max_concurrent_processes * 0.6))
+        self._processing_semaphore = asyncio.Semaphore(self.max_concurrent_processes)
+        
+        logger.info(f"📉 DTESN degradation: depth={self.config.max_membrane_depth}, "
+                   f"reservoir={self.config.esn_reservoir_size}, "
+                   f"concurrent={self.max_concurrent_processes}")
+    
+    async def _deactivate_degradation_mode(self):
+        """Deactivate graceful degradation when conditions improve."""
+        if not self.degradation_active:
+            return
+        
+        # Check if conditions have improved
+        concurrent_ratio = self._processing_stats["concurrent_requests"] / self.max_concurrent_processes
+        error_rate = (self._processing_stats["failed_requests"] / 
+                     max(1, self._processing_stats["total_requests"]))
+        
+        if concurrent_ratio < 0.6 and error_rate < 0.05 and self.current_load < 1.0:
+            logger.info("✅ DTESN Processor: Deactivating graceful degradation mode")
+            self.degradation_active = False
+            
+            # Restore reasonable default configuration
+            self.config.max_membrane_depth = 5
+            self.config.esn_reservoir_size = 100
+            self.config.bseries_max_order = 4
+            self.max_concurrent_processes = 10
+            self._processing_semaphore = asyncio.Semaphore(self.max_concurrent_processes)
 
     async def cleanup_resources(self):
         """Clean up processing resources."""
