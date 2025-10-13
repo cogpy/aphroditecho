@@ -49,7 +49,7 @@ endif()
 
 # Get PyTorch libraries from Python
 execute_process(
-    COMMAND ${Python_EXECUTABLE} -c "import torch.utils.cpp_extension; libs=[lib for lib in torch.utils.cpp_extension.COMMON_LINK_FLAGS if not lib.startswith('-') and 'cuda' not in lib.lower()]; print(';'.join(libs) if libs else 'torch;torch_cpu')"
+    COMMAND ${Python_EXECUTABLE} -c "import torch; print('torch;torch_cpu')"
     OUTPUT_VARIABLE TORCH_LIBRARIES
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE TORCH_LIBRARIES_RESULT
