@@ -113,11 +113,22 @@ class HypergraphQLParser:
         if 'atom_type' in where_clause:
             atom_type_str = where_clause['atom_type']
             try:
-                atom_type = AtomType[atom_type_str.upper().replace('-', '_')]
+                # Try direct conversion first
+                atom_type = AtomType[atom_type_str.upper().replace('-', '_').replace('NODE', '_NODE').replace('LINK', '_LINK')]
                 candidates = self.atomspace.get_atoms_by_type(atom_type)
             except KeyError:
-                logger.warning(f"Unknown atom type: {atom_type_str}")
-                return []
+                # Try matching by value
+                try:
+                    matching_types = [at for at in AtomType if at.value == atom_type_str or at.name == atom_type_str.upper().replace('-', '_')]
+                    if matching_types:
+                        atom_type = matching_types[0]
+                        candidates = self.atomspace.get_atoms_by_type(atom_type)
+                    else:
+                        logger.warning(f"Unknown atom type: {atom_type_str}")
+                        return []
+                except Exception as e:
+                    logger.warning(f"Error parsing atom type {atom_type_str}: {e}")
+                    return []
         else:
             candidates = list(self.atomspace.atoms.values())
         
@@ -220,7 +231,8 @@ class HypergraphQLParser:
         depth = traverse_spec.get('depth', 1)
         filter_spec = traverse_spec.get('filter', {})
         
-        result_atoms = set()
+        # Use dict keyed by atom ID to track unique atoms
+        result_atoms_dict = {atom.id: atom for atom in start_atoms}
         
         for start_atom in start_atoms:
             traversed = self._traverse_from_atom(
@@ -229,9 +241,10 @@ class HypergraphQLParser:
                 depth,
                 filter_spec
             )
-            result_atoms.update(traversed)
+            for atom in traversed:
+                result_atoms_dict[atom.id] = atom
         
-        return list(result_atoms)
+        return list(result_atoms_dict.values())
     
     def _traverse_from_atom(
         self,
