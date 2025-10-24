@@ -33,6 +33,7 @@ Developed through a collaboration between [PygmalionAI](https://pygmalion.chat) 
 ## 📋 Table of Contents
 
 - [🧠 Deep Tree Echo Integration](#-deep-tree-echo-integration)
+- [🧬 OpenCog Integration](#-opencog-integration)
 - [🚀 Automated Deployment Pipeline](#-automated-deployment-pipeline)
 - [🏗️ System Architecture](#️-system-architecture)
 - [🔥 News & Updates](#-news--updates)
@@ -179,6 +180,86 @@ mindmap
 ```
 
 **📋 Complete Documentation**: [Echo Systems Architecture Overview](ECHO_SYSTEMS_ARCHITECTURE.md)
+
+## 🧬 OpenCog Integration
+
+> **Hybrid Symbolic-Neural Cognitive Architecture**
+
+Aphrodite Engine now integrates OpenCog's cognitive architecture for advanced symbolic reasoning, attention allocation, and evolutionary program synthesis.
+
+### 🌟 Core Components
+
+- **🧠 ECAN-Aware AtomSpace**: Economic Attention Network-based attention allocation for cognitive resource management
+- **🔍 HypergraphQL**: GraphQL-like query interface for flexible atomspace pattern matching and traversal  
+- **🧬 ASMOSES**: Adaptive Symbolic MOSES for evolutionary program synthesis and neural architecture search
+- **⚡ Hybrid Integration**: Unified symbolic-neural architecture optimization with Aphrodite Engine
+
+### 🚀 Quick Start
+
+```python
+from cognitive_architectures import (
+    OpenCogDeepTreeEcho,
+    OpenCogDeepTreeEchoConfig,
+    AtomType
+)
+
+# Initialize system
+config = OpenCogDeepTreeEchoConfig(enable_ecan=True)
+system = OpenCogDeepTreeEcho(config)
+await system.initialize()
+await system.start()
+
+# Add concepts with attention
+await system.add_concept("neural-network", truth_strength=0.9, initial_attention=80.0)
+await system.add_concept("deep-learning", truth_strength=0.95, initial_attention=100.0)
+
+# Create relationships
+await system.add_relationship(
+    "neural-network", 
+    "deep-learning",
+    AtomType.INHERITANCE_LINK
+)
+
+# Query with HypergraphQL
+result = await system.query({
+    'where': {
+        'atom_type': 'ConceptNode',
+        'truth_value.strength': {'gte': 0.8}
+    },
+    'order_by': [{'field': 'attention.sti', 'direction': 'desc'}],
+    'limit': 10
+})
+
+# Get attentional focus
+focus = await system.get_attentional_focus(top_k=5)
+
+# Spread attention
+await system.spread_attention_from("neural-network", depth=2)
+
+# Evolve architecture
+optimized = await system.evolve_architecture(
+    task_specs={'task': 'classification', 'input_dim': 512},
+    performance_metrics={'accuracy': 0.85}
+)
+```
+
+### 📚 Documentation
+
+- **Quick Start**: [OPENCOG_QUICK_START.md](OPENCOG_QUICK_START.md)
+- **Full Documentation**: [OPENCOG_DEEP_TREE_ECHO.md](OPENCOG_DEEP_TREE_ECHO.md)
+- **Demo Script**: Run `python demo_opencog_integration.py`
+- **Tests**: Run `pytest test_opencog_integration.py -v` (30 tests, all passing)
+
+### 🎯 Key Features
+
+✅ **AtomSpace**: Knowledge representation with truth values and attention values  
+✅ **ECAN**: Economic attention allocation and spreading  
+✅ **HypergraphQL**: Flexible graph queries with pattern matching  
+✅ **ASMOSES**: Evolutionary program synthesis for architecture search  
+✅ **Hybrid Optimization**: Combines symbolic reasoning with neural optimization  
+✅ **Background Tasks**: Automatic attention decay and spreading  
+✅ **Pattern Matching**: Variable binding and graph traversal  
+✅ **Integration**: Seamless connection with existing Deep Tree Echo systems
 
 ### 🎯 Key Integration Components
 
