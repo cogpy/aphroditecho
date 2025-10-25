@@ -108,13 +108,23 @@ class AgentZeroAdapter:
             config: Agent configuration dictionary
             
         Returns:
-            Agent instance
+            Agent instance (or mock agent if agent-zero not available)
         """
         await self.initialize()
         
         if not self.initialized or not hasattr(self, 'Agent'):
-            logger.error("Agent-zero not properly initialized")
-            return None
+            logger.warning("Agent-zero not properly initialized, creating mock agent")
+            # Create a simple mock agent for standalone mode
+            mock_agent = type('MockAgent', (), {
+                'id': agent_id,
+                'name': name or agent_id,
+                'config': config or {}
+            })()
+            
+            self.agents[agent_id] = mock_agent
+            self.agent_contexts[agent_id] = {'mock': True, 'agent': mock_agent}
+            logger.info(f"Created mock agent: {agent_id} ({name})")
+            return mock_agent
             
         # Create agent context
         agent_config = self.AgentConfig()
@@ -180,8 +190,9 @@ class AgentZeroAdapter:
         """Remove an agent instance."""
         if agent_id in self.agent_contexts:
             context = self.agent_contexts[agent_id]
-            # Clean up agent context
-            self.AgentContext.remove(agent_id)
+            # Clean up agent context (only if using real agent-zero)
+            if hasattr(self, 'AgentContext') and not isinstance(context, dict):
+                self.AgentContext.remove(agent_id)
             
         self.agents.pop(agent_id, None)
         self.agent_contexts.pop(agent_id, None)
