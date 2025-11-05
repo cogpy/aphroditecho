@@ -11,12 +11,10 @@ Implements Task 7.1.2 requirements:
 - Schema validation for complex DTESN data structures
 """
 
-import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Union, Tuple
 from enum import Enum
-from dataclasses import asdict
 import logging
 
 from fastapi import HTTPException

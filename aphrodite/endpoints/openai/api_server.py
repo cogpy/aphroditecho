@@ -90,6 +90,7 @@ from aphrodite.endpoints.openai.serving_classification import (
     ServingClassification)
 from aphrodite.endpoints.openai.serving_completions import (
     OpenAIServingCompletion)
+from aphrodite.endpoints.openai.serving_ab_testing import router as ab_testing_router
 
 # Import DTESN integration routes
 try:
@@ -98,6 +99,14 @@ try:
         initialize_dtesn_handler
     )
     DTESN_ROUTES_AVAILABLE = True
+except ImportError:
+    logger.warning("DTESN routes not available")
+    DTESN_ROUTES_AVAILABLE = False
+
+# Import A/B testing middleware
+from aphrodite.endpoints.middleware.ab_testing_middleware import (
+    ABTestingMiddleware, get_ab_testing_manager
+)
     logger.info("DTESN OpenAI routes available")
 except ImportError as e:
     logger.debug(f"DTESN routes not available: {e}")
@@ -144,6 +153,29 @@ from aphrodite.utils import (Device, FlexibleArgumentParser, decorate_logs,
 from aphrodite.v1.metrics.prometheus import get_prometheus_registry
 from aphrodite.version import __version__ as APHRODITE_VERSION
 
+# Import comprehensive server-side monitoring system
+try:
+    from aphrodite.endpoints.monitoring import (
+        get_monitoring_routes, 
+        monitoring_middleware, 
+        start_monitoring, 
+        stop_monitoring
+    )
+    MONITORING_AVAILABLE = True
+    logger.info("Comprehensive server-side monitoring available")
+except ImportError as e:
+    logger.debug(f"Monitoring system not available: {e}")
+    MONITORING_AVAILABLE = False
+
+# Import autoscaling and capacity planning system
+try:
+    from aphrodite.endpoints.autoscaling import get_autoscaling_routes
+    AUTOSCALING_AVAILABLE = True
+    logger.info("Autoscaling and capacity planning available")
+except ImportError as e:
+    logger.debug(f"Autoscaling system not available: {e}")
+    AUTOSCALING_AVAILABLE = False
+
 SERVE_KOBOLD_LITE_UI = strtobool(os.getenv("SERVE_KOBOLD_LITE_UI", "1"))
 
 router = APIRouter()
@@ -159,6 +191,11 @@ _running_tasks: set[asyncio.Task] = set()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start comprehensive monitoring system
+    if MONITORING_AVAILABLE:
+        start_monitoring()
+        logger.info("Started comprehensive server-side monitoring")
+    
     try:
         if app.state.log_stats:
             engine_client: EngineClient = app.state.engine_client
@@ -184,6 +221,11 @@ async def lifespan(app: FastAPI):
             if task is not None:
                 task.cancel()
     finally:
+        # Stop comprehensive monitoring system
+        if MONITORING_AVAILABLE:
+            stop_monitoring()
+            logger.info("Stopped comprehensive server-side monitoring")
+        
         # Ensure app state including engine ref is gc'd
         del app.state
 
@@ -1907,6 +1949,10 @@ def build_app(args: Namespace) -> FastAPI:
         app = FastAPI(lifespan=lifespan)
     app.include_router(router)
 
+    # Include A/B testing routes
+    app.include_router(ab_testing_router)
+    logger.info("A/B testing API routes included")
+
     # Include DTESN-enhanced OpenAI routes if available
     if DTESN_ROUTES_AVAILABLE:
         app.include_router(dtesn_router)
@@ -1921,6 +1967,19 @@ def build_app(args: Namespace) -> FastAPI:
     app.root_path = args.root_path
 
     mount_metrics(app)
+    
+    # Mount comprehensive monitoring routes and middleware
+    if MONITORING_AVAILABLE:
+        monitoring_router = get_monitoring_routes()
+        app.include_router(monitoring_router)
+        app.add_middleware(monitoring_middleware)  # Add request tracing
+        logger.info("Comprehensive monitoring system integrated")
+    
+    # Mount autoscaling and capacity planning routes
+    if AUTOSCALING_AVAILABLE:
+        autoscaling_router = get_autoscaling_routes()
+        app.include_router(autoscaling_router)
+        logger.info("Autoscaling and capacity planning integrated")
 
     app.add_middleware(
         CORSMiddleware,
@@ -1929,6 +1988,11 @@ def build_app(args: Namespace) -> FastAPI:
         allow_methods=args.allowed_methods,
         allow_headers=args.allowed_headers,
     )
+
+    # Add A/B testing middleware (before security middlewares for proper routing)
+    ab_manager = get_ab_testing_manager()
+    app.add_middleware(ABTestingMiddleware, ab_manager=ab_manager)
+    logger.info("A/B testing middleware enabled")
 
     # Add comprehensive security middleware stack
     # Order matters: outermost to innermost

@@ -47,7 +47,7 @@ env:
   # Build configuration - OPTIMIZED for complex builds
   CMAKE_BUILD_TYPE: Release
   MAX_JOBS: 64  # Increased from 2 - significant improvement
-  CCACHE_MAXSIZE: 100G  # Increased from 2G - essential for C++/CUDA builds
+  CCACHE_MAXSIZE: 10G  # Increased from 2G - essential for C++/CUDA builds
   # Echo Systems configuration
   ECHO_ENABLE_DEEP_TREE: true
   ECHO_ENABLE_VM_DAEMON: true

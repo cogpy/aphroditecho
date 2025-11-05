@@ -273,6 +273,12 @@ class cmake_build_ext(build_ext):
                 '-DCMAKE_HIP_COMPILER_LAUNCHER=sccache',
             ]
         elif is_ccache_available():
+            # Optimal ccache configuration for disk space management
+            os.environ['CCACHE_DIR'] = '/tmp/ccache'
+            os.environ['CCACHE_MAXSIZE'] = '2G'
+            os.environ['CCACHE_COMPRESS'] = 'true'
+            os.environ['CCACHE_COMPRESSLEVEL'] = '6'
+            os.environ['CCACHE_SLOPPINESS'] = 'time_macros,include_file_mtime'
             cmake_args += [
                 '-DCMAKE_C_COMPILER_LAUNCHER=ccache',
                 '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache',
@@ -358,47 +364,78 @@ class cmake_build_ext(build_ext):
         
         def ultra_aggressive_cleanup():
             while True:
+                # Comprehensive cleanup patterns for maximum disk space recovery
                 temp_patterns = [
                     os.path.join(self.build_temp, "**/*.fatbin.c"),
                     os.path.join(self.build_temp, "**/*cudafe*"),
                     os.path.join(self.build_temp, "**/tmpxft_*"),
                     "/tmp/tmpxft_*",
-                    "/tmp/*cudafe*",
+                    "/tmp/*cudafe*", 
                     "/tmp/*.fatbin.c",
                     "/tmp/*.stub.c",
                     "/tmp/cc*.s",
+                    "/dev/shm/tmp/tmpxft_*",
+                    "/dev/shm/tmp/*cudafe*",
+                    "/dev/shm/tmp/*.tmp",
                 ]
                 
                 for pattern in temp_patterns:
                     for temp_file in glob.glob(pattern, recursive=True):
                         try:
-                            if os.path.getmtime(temp_file) < time.time() - 30:
+                            # More aggressive cleanup - remove files older than 15 seconds
+                            if os.path.getmtime(temp_file) < time.time() - 15:
                                 os.remove(temp_file)
                         except OSError:
                             pass
                 
+                # Clean build directory aggressively
                 if os.path.exists(self.build_temp):
                     for root, dirs, files in os.walk(self.build_temp):
                         for file in files:
-                            if file.endswith(('.o', '.obj', '.tmp', '.fatbin.c', '.stub.c')):
+                            if file.endswith(('.o', '.obj', '.tmp', '.fatbin.c', '.stub.c', '.ptx', '.cubin')):
                                 try:
                                     file_path = os.path.join(root, file)
-                                    if os.path.getmtime(file_path) < time.time() - 30:
+                                    # Keep only recently modified files (15 seconds)
+                                    if os.path.getmtime(file_path) < time.time() - 15:
                                         os.remove(file_path)
                                 except OSError:
                                     pass
                 
+                # Force garbage collection and ccache cleanup
                 import gc
                 gc.collect()
-                time.sleep(15)
+                
+                # Clean ccache if it gets too large (keep under 1.8GB to be safe)
+                try:
+                    subprocess.run(['ccache', '--cleanup'], capture_output=True)
+                except:
+                    pass
+                
+                time.sleep(10)  # More frequent cleanup
         
         cleanup_thread = threading.Thread(target=ultra_aggressive_cleanup, daemon=True)
         cleanup_thread.start()
         
-        os.environ['TMPDIR'] = '/dev/shm/tmp' if os.path.exists('/dev/shm') else '/tmp'
-        os.environ['MAX_JOBS'] = '1'
+        # Optimize for disk space and memory constraints
+        tmpdir_shm = '/dev/shm/tmp' if os.path.exists('/dev/shm') else '/tmp'
+        os.environ['TMPDIR'] = tmpdir_shm
+        
+        # Ensure temp directory exists
+        os.makedirs(tmpdir_shm, exist_ok=True)
+        
+        # Conservative resource allocation for stability
+        available_bytes = _get_available_memory_bytes()
+        if available_bytes and available_bytes < 8 * 1024**3:  # Less than 8GB RAM
+            os.environ['MAX_JOBS'] = '1'
+        else:
+            os.environ['MAX_JOBS'] = '2'
+        
         os.environ['NVCC_THREADS'] = '1'
         os.environ['TORCH_CUDA_ARCH_LIST'] = '8.0'
+        
+        # Set ccache environment for optimal performance
+        os.environ['CCACHE_DIR'] = '/tmp/ccache'
+        os.environ['CCACHE_MAXSIZE'] = '2G'
 
         # Install the libraries
         for ext in self.extensions:
