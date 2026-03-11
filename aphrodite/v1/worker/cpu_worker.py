@@ -53,9 +53,17 @@ class CPUWorker(Worker):
             self.local_omp_cpuid = omp_cpuids.split("|")[self.rank]
 
         if self.local_omp_cpuid != "all":
-            ret = torch.ops._C_utils.init_cpu_threads_env(self.local_omp_cpuid)
-            if ret:
-                logger.info(ret)
+            c_utils_ns = getattr(torch.ops, "_C_utils", None)
+            init_threads_op = getattr(c_utils_ns, "init_cpu_threads_env", None)
+            if init_threads_op is not None:
+                ret = init_threads_op(self.local_omp_cpuid)
+                if ret:
+                    logger.info(ret)
+            else:
+                logger.warning(
+                    "Custom CPU thread affinity op unavailable; "
+                    "continuing without explicit CPU thread binding."
+                )
 
         # Note: unique identifier for creating allreduce shared memory
         os.environ["APHRODITE_DIST_IDENT"] = self.distributed_init_method.split(

@@ -12,7 +12,14 @@ Components:
 - Performance monitoring and caching
 """
 
-from aphrodite.endpoints.deep_tree_echo.app_factory import create_app
-from aphrodite.endpoints.deep_tree_echo.routes import router
-
 __all__ = ["create_app", "router"]
+
+
+def __getattr__(name):
+    if name == "create_app":
+        from aphrodite.endpoints.deep_tree_echo.app_factory import create_app
+        return create_app
+    if name == "router":
+        from aphrodite.endpoints.deep_tree_echo.routes import router
+        return router
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
