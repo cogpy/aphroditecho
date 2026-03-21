@@ -63,6 +63,8 @@ env:
   CONTAINER_REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/vm-daemon-sys
 
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
 jobs:
   # Validate Echo Systems Architecture
   validate-echo-architecture:

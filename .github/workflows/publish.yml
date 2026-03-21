@@ -3,6 +3,10 @@
 
 name: Create Release
 
+env:
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
+
 on:
   push:
     tags:

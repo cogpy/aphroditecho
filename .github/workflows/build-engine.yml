@@ -76,6 +76,8 @@ env:
   # Default target device
   APHRODITE_TARGET_DEVICE: ${{ github.event.inputs.target_device || 'cpu' }}
 
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
 jobs:
   # Code Quality Gates - Fast feedback loop
   code-quality:
