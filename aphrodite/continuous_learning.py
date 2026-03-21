@@ -26,6 +26,46 @@ from echo_self.meta_learning.meta_optimizer import ExperienceReplay, Architectur
 logger = logging.getLogger(__name__)
 
 
+# Server-side learning extensions
+@dataclass
+class ServerSideConfig:
+    """Configuration for server-side continuous learning."""
+    # Server-side data collection
+    enable_request_monitoring: bool = True
+    enable_response_feedback: bool = True
+    enable_user_interactions: bool = True
+    
+    # Background learning
+    background_learning_interval: float = 30.0  # seconds
+    max_concurrent_learning_tasks: int = 2
+    enable_hot_swapping: bool = True
+    
+    # Production safety
+    max_learning_rate_production: float = 0.0001
+    learning_rate_decay_production: float = 0.99
+    enable_rollback_on_failure: bool = True
+    
+    # Data aggregation
+    min_interactions_for_learning: int = 10
+    interaction_quality_threshold: float = 0.5
+    enable_performance_feedback: bool = True
+
+
+@dataclass
+class InteractionFeedback:
+    """Server-side interaction feedback data."""
+    request_id: str
+    endpoint: str
+    method: str
+    response_time_ms: float
+    status_code: int
+    user_satisfaction: Optional[float] = None  # -1 to 1
+    error_occurred: bool = False
+    model_confidence: Optional[float] = None
+    timestamp: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class InteractionData:
     """Represents interaction data for continuous learning."""
