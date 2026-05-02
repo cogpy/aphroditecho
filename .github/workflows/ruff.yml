@@ -1,5 +1,9 @@
 name: ruff
 
+env:
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
+
 on:
   # Trigger the workflow on push or pull request,
   # but only for the main branch

@@ -35,6 +35,8 @@ env:
   MAX_INVESTIGATION_TIME: 30  # minutes
   REPORT_RETENTION_DAYS: 7
 
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
 jobs:
   disk-space-investigation:
     name: 🔍 Investigate Disk Space Usage
