@@ -33,6 +33,8 @@ env:
   INTEGRATION_LEVEL: ${{ github.event.inputs.integration_level || 'comprehensive' }}
   ECHO_SYSTEMS_ENABLED: ${{ github.event.inputs.enable_all_echo_systems || 'true' }}
 
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
 jobs:
   # Trigger parallel build and MLOps workflows
   trigger-builds:

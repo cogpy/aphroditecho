@@ -53,13 +53,16 @@ class CPUWorker(Worker):
             self.local_omp_cpuid = omp_cpuids.split("|")[self.rank]
 
         if self.local_omp_cpuid != "all":
-            c_utils_ns = getattr(torch.ops, "_C_utils", None)
-            init_threads_op = getattr(c_utils_ns, "init_cpu_threads_env", None)
-            if init_threads_op is not None:
+            try:
+                c_utils_ns = getattr(torch.ops, "_C_utils", None)
+                init_threads_op = getattr(c_utils_ns, "init_cpu_threads_env", None)
+                if init_threads_op is None:
+                    raise AttributeError("init_cpu_threads_env unavailable")
                 ret = init_threads_op(self.local_omp_cpuid)
                 if ret:
                     logger.info(ret)
-            else:
+            except AttributeError:
+                # CPU-only PyTorch may not provide this operation.
                 logger.warning(
                     "Custom CPU thread affinity op unavailable; "
                     "continuing without explicit CPU thread binding."

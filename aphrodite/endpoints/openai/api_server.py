@@ -90,6 +90,7 @@ from aphrodite.endpoints.openai.serving_classification import (
     ServingClassification)
 from aphrodite.endpoints.openai.serving_completions import (
     OpenAIServingCompletion)
+from aphrodite.endpoints.openai.serving_ab_testing import router as ab_testing_router
 
 # Import DTESN integration routes
 try:
@@ -98,10 +99,14 @@ try:
         initialize_dtesn_handler
     )
     DTESN_ROUTES_AVAILABLE = True
-    logger.info("DTESN OpenAI routes available")
-except ImportError as e:
-    logger.debug(f"DTESN routes not available: {e}")
+except ImportError:
+    logger.warning("DTESN routes not available")
     DTESN_ROUTES_AVAILABLE = False
+
+# Import A/B testing middleware
+from aphrodite.endpoints.middleware.ab_testing_middleware import (
+    ABTestingMiddleware, get_ab_testing_manager
+)
 from aphrodite.endpoints.openai.serving_embedding import OpenAIServingEmbedding
 from aphrodite.endpoints.openai.serving_engine import OpenAIServing
 from aphrodite.endpoints.openai.serving_messages import OpenAIServingMessages
@@ -144,6 +149,44 @@ from aphrodite.utils import (Device, FlexibleArgumentParser, decorate_logs,
 from aphrodite.v1.metrics.prometheus import get_prometheus_registry
 from aphrodite.version import __version__ as APHRODITE_VERSION
 
+# Import comprehensive server-side monitoring system
+try:
+    from aphrodite.endpoints.monitoring import (
+        get_monitoring_routes, 
+        monitoring_middleware, 
+        start_monitoring, 
+        stop_monitoring
+    )
+    MONITORING_AVAILABLE = True
+    logger.info("Comprehensive server-side monitoring available")
+except ImportError as e:
+    logger.debug(f"Monitoring system not available: {e}")
+    MONITORING_AVAILABLE = False
+
+# Import autoscaling and capacity planning system
+try:
+    from aphrodite.endpoints.autoscaling import get_autoscaling_routes
+    AUTOSCALING_AVAILABLE = True
+    logger.info("Autoscaling and capacity planning available")
+except ImportError as e:
+    logger.debug(f"Autoscaling system not available: {e}")
+    AUTOSCALING_AVAILABLE = False
+
+# Import continuous learning system for server-side model improvement
+try:
+    from aphrodite.endpoints.openai.continuous_learning_routes import (
+        router as continuous_learning_router
+    )
+    from aphrodite.endpoints.openai.serving_continuous_learning import (
+        OpenAIServingContinuousLearning
+    )
+    from aphrodite.continuous_learning import ServerSideConfig
+    CONTINUOUS_LEARNING_AVAILABLE = True
+    logger.info("Continuous learning system available")
+except ImportError as e:
+    logger.debug(f"Continuous learning system not available: {e}")
+    CONTINUOUS_LEARNING_AVAILABLE = False
+
 SERVE_KOBOLD_LITE_UI = strtobool(os.getenv("SERVE_KOBOLD_LITE_UI", "1"))
 
 router = APIRouter()
@@ -159,6 +202,11 @@ _running_tasks: set[asyncio.Task] = set()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start comprehensive monitoring system
+    if MONITORING_AVAILABLE:
+        start_monitoring()
+        logger.info("Started comprehensive server-side monitoring")
+    
     try:
         if app.state.log_stats:
             engine_client: EngineClient = app.state.engine_client
@@ -184,6 +232,11 @@ async def lifespan(app: FastAPI):
             if task is not None:
                 task.cancel()
     finally:
+        # Stop comprehensive monitoring system
+        if MONITORING_AVAILABLE:
+            stop_monitoring()
+            logger.info("Stopped comprehensive server-side monitoring")
+        
         # Ensure app state including engine ref is gc'd
         del app.state
 
@@ -1907,6 +1960,10 @@ def build_app(args: Namespace) -> FastAPI:
         app = FastAPI(lifespan=lifespan)
     app.include_router(router)
 
+    # Include A/B testing routes
+    app.include_router(ab_testing_router)
+    logger.info("A/B testing API routes included")
+
     # Include DTESN-enhanced OpenAI routes if available
     if DTESN_ROUTES_AVAILABLE:
         app.include_router(dtesn_router)
@@ -1921,6 +1978,24 @@ def build_app(args: Namespace) -> FastAPI:
     app.root_path = args.root_path
 
     mount_metrics(app)
+    
+    # Mount comprehensive monitoring routes and middleware
+    if MONITORING_AVAILABLE:
+        monitoring_router = get_monitoring_routes()
+        app.include_router(monitoring_router)
+        app.add_middleware(monitoring_middleware)  # Add request tracing
+        logger.info("Comprehensive monitoring system integrated")
+    
+    # Mount autoscaling and capacity planning routes
+    if AUTOSCALING_AVAILABLE:
+        autoscaling_router = get_autoscaling_routes()
+        app.include_router(autoscaling_router)
+        logger.info("Autoscaling and capacity planning integrated")
+
+    # Mount continuous learning routes if available and enabled
+    if CONTINUOUS_LEARNING_AVAILABLE and getattr(args, 'enable_continuous_learning', False):
+        app.include_router(continuous_learning_router)
+        logger.info("Continuous learning API routes included (/v1/learning/*)")
 
     app.add_middleware(
         CORSMiddleware,
@@ -1929,6 +2004,11 @@ def build_app(args: Namespace) -> FastAPI:
         allow_methods=args.allowed_methods,
         allow_headers=args.allowed_headers,
     )
+
+    # Add A/B testing middleware (before security middlewares for proper routing)
+    ab_manager = get_ab_testing_manager()
+    app.add_middleware(ABTestingMiddleware, ab_manager=ab_manager)
+    logger.info("A/B testing middleware enabled")
 
     # Add comprehensive security middleware stack
     # Order matters: outermost to innermost
@@ -2236,6 +2316,43 @@ async def init_app_state(
         lora_config=lora_config,
         dynamic_config=dynamic_config
     )
+
+    # Initialize continuous learning service if enabled
+    if CONTINUOUS_LEARNING_AVAILABLE and getattr(args, 'enable_continuous_learning', False):
+        try:
+            # Create server-side learning configuration from CLI args
+            server_side_config = ServerSideConfig(
+                background_learning_interval=getattr(args, 'continuous_learning_interval', 60),
+                min_interactions_for_learning=getattr(args, 'continuous_learning_min_interactions', 10),
+                quality_threshold=getattr(args, 'continuous_learning_quality_threshold', 0.5),
+                max_learning_rate=getattr(args, 'continuous_learning_max_rate', 0.001),
+                enable_automatic_rollback=getattr(args, 'continuous_learning_enable_rollback', True),
+            )
+            
+            # Initialize the continuous learning service
+            # Note: The service is stored in app.state and routes use dependency injection
+            # to access it via get_learning_service() in continuous_learning_routes.py
+            state.openai_serving_continuous_learning = OpenAIServingContinuousLearning(
+                engine_client=engine_client,
+                model_config=model_config,
+                models=state.openai_serving_models,
+                request_logger=request_logger,
+                server_config=server_side_config,
+            )
+            
+            logger.info(
+                "Continuous learning service initialized with: "
+                f"interval={server_side_config.background_learning_interval}s, "
+                f"min_interactions={server_side_config.min_interactions_for_learning}, "
+                f"quality_threshold={server_side_config.quality_threshold}, "
+                f"max_rate={server_side_config.max_learning_rate}, "
+                f"rollback={server_side_config.enable_automatic_rollback}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize continuous learning service: {e}")
+            state.openai_serving_continuous_learning = None
+    else:
+        state.openai_serving_continuous_learning = None
 
     state.enable_server_load_tracking = args.enable_server_load_tracking
     state.server_load_metrics = 0

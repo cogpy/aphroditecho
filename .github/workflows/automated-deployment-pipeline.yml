@@ -70,6 +70,8 @@ env:
   MODEL_REGISTRY_URL: ghcr.io/${{ github.repository }}/models
   DEPLOYMENT_ARTIFACT_REGISTRY: ghcr.io/${{ github.repository }}/deployments
 
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
 jobs:
   # Pre-deployment validation and quality checks
   quality-assurance:

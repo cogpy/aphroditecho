@@ -60,6 +60,8 @@ env:
   ERROR_LABEL_PREFIX: "blocking-error"
   SELF_HEALING_LABEL: "self-healing"
 
+  # KSM-13: Prevent LFS failures from blocking CI/CD
+  GIT_LFS_SKIP_SMUDGE: "1"
 jobs:
   detect-errors:
     name: 🔍 Error Detection & Analysis

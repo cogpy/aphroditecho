@@ -11,11 +11,10 @@ Implements Task 7.1.2 requirements:
 - Integration with DTESN validation systems
 """
 
-import json
 import re
 import html
 import urllib.parse
-from typing import Any, Dict, List, Optional, Union, Callable
+from typing import Any, Dict, List, Union, Callable
 from enum import Enum
 import logging
 import time

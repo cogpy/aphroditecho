@@ -195,8 +195,9 @@ class DTESNProcessor:
         self,
         config: Optional[DTESNConfig] = None,
         engine: Optional[AsyncAphrodite] = None,
-        max_concurrent_processes: int = 100,  # Enhanced for 10x capacity
+        max_concurrent_processes: int = 37,  # Optimized for 37 concurrent streams
         enable_async_optimization: bool = True,
+        enable_dynamic_config: bool = True,
         enable_dynamic_batching: bool = True,
         batch_config: Optional[BatchConfiguration] = None,
         server_load_tracker: Optional[Callable[[], float]] = None,
@@ -210,6 +211,7 @@ class DTESNProcessor:
             engine: Aphrodite engine for comprehensive model integration
             max_concurrent_processes: Maximum concurrent processing operations (enhanced default: 100)
             enable_async_optimization: Enable advanced async optimizations
+            enable_dynamic_config: Enable runtime dynamic configuration controls
             max_concurrent_processes: Maximum concurrent processing operations
             enable_dynamic_batching: Enable intelligent request batching
             batch_config: Configuration for batch processing behavior
@@ -219,6 +221,7 @@ class DTESNProcessor:
         self.engine = engine
         self.max_concurrent_processes = max_concurrent_processes
         self.enable_async_optimization = enable_async_optimization
+        self.enable_dynamic_config = enable_dynamic_config
         self.enable_dynamic_batching = enable_dynamic_batching
 
         # Initialize enhanced concurrent processing resources
@@ -228,7 +231,7 @@ class DTESNProcessor:
         self._data_pipeline: Optional[DataProcessingPipeline] = None
         self._pipeline_monitor: Optional[IntegratedDataPipelineMonitor] = None
         self._pipeline_config = PipelineConfiguration(
-            max_workers=min(max_concurrent_processes // 2, 16),  # Balance workers with concurrency
+            max_workers=min(max_concurrent_processes // 2, 18),  # Balance workers with concurrency for 37 streams
             enable_dynamic_batching=True,
             max_batch_size=1000,
             enable_vectorization=True,
@@ -289,7 +292,7 @@ class DTESNProcessor:
         self._data_pipeline: Optional[DataProcessingPipeline] = None
         self._pipeline_monitor: Optional[IntegratedDataPipelineMonitor] = None
         self._pipeline_config = PipelineConfiguration(
-            max_workers=min(max_concurrent_processes // 2, 16),  # Balance workers with concurrency
+            max_workers=min(max_concurrent_processes // 2, 18),  # Balance workers with concurrency for 37 streams
             enable_dynamic_batching=True,
             max_batch_size=1000,
             enable_vectorization=True,
@@ -321,7 +324,7 @@ class DTESNProcessor:
         self._data_pipeline: Optional[DataProcessingPipeline] = None
         self._pipeline_monitor: Optional[IntegratedDataPipelineMonitor] = None
         self._pipeline_config = PipelineConfiguration(
-            max_workers=min(max_concurrent_processes // 2, 16),  # Balance workers with concurrency
+            max_workers=min(max_concurrent_processes // 2, 18),  # Balance workers with concurrency for 37 streams
             enable_dynamic_batching=enable_dynamic_batching,
             max_batch_size=1000,
             enable_vectorization=True,
@@ -334,6 +337,10 @@ class DTESNProcessor:
         # Initialize enhanced engine integration
         if self.engine:
             asyncio.create_task(self._initialize_engine_integration())
+
+        # Initialize dynamic configuration management
+        if hasattr(self, 'enable_dynamic_config') and self.enable_dynamic_config:
+            self._setup_dynamic_configuration()
 
         logger.info(
             f"Enhanced DTESN processor initialized with engine integration, "
@@ -2715,6 +2722,102 @@ class DTESNProcessor:
             self.max_concurrent_processes = 10
             self._processing_semaphore = asyncio.Semaphore(self.max_concurrent_processes)
 
+    def _setup_dynamic_configuration(self):
+        """Setup dynamic configuration management integration."""
+        try:
+            # Import here to avoid circular imports
+            from .dynamic_config_manager import get_dynamic_config_manager
+            
+            # Get the global configuration manager
+            self.config_manager = get_dynamic_config_manager()
+            
+            # Register callback for configuration updates
+            self.config_manager.register_update_callback(self._on_config_update)
+            
+            # Initialize with current configuration
+            if not hasattr(self.config_manager, '_current_config') or self.config_manager._current_config is None:
+                from .dynamic_config_manager import initialize_dynamic_config_manager
+                initialize_dynamic_config_manager(initial_config=self.config)
+            
+            logger.info("Dynamic configuration management enabled")
+            
+        except ImportError as e:
+            logger.warning(f"Dynamic configuration not available: {e}")
+            self.config_manager = None
+        except Exception as e:
+            logger.error(f"Failed to setup dynamic configuration: {e}")
+            self.config_manager = None
+    
+    async def _on_config_update(self, new_config: 'DTESNConfig'):
+        """Handle configuration updates from the dynamic config manager."""
+        try:
+            old_config = self.config
+            self.config = new_config
+            
+            # Check if critical parameters changed that require reinitialization
+            critical_params = [
+                'esn_reservoir_size', 
+                'max_membrane_depth',
+                'bseries_max_order'
+            ]
+            
+            needs_reinit = any(
+                getattr(old_config, param) != getattr(new_config, param)
+                for param in critical_params
+            )
+            
+            if needs_reinit:
+                logger.info("Critical DTESN parameters changed, reinitializing components")
+                await self._reinitialize_dtesn_components(new_config)
+            else:
+                logger.info("Non-critical configuration updated, applying changes")
+                await self._apply_config_changes(old_config, new_config)
+                
+        except Exception as e:
+            logger.error(f"Failed to apply configuration update: {e}")
+            # Rollback to old configuration on failure
+            self.config = old_config
+    
+    async def _reinitialize_dtesn_components(self, new_config: 'DTESNConfig'):
+        """Reinitialize DTESN components with new configuration."""
+        try:
+            # Update internal DTESN configuration if available
+            if hasattr(self, 'dtesn_config') and self.dtesn_config:
+                self.dtesn_config.reservoir_size = new_config.esn_reservoir_size
+                self.dtesn_config.max_depth = new_config.max_membrane_depth
+                self.dtesn_config.bseries_order = new_config.bseries_max_order
+            
+            # Update processing semaphore if concurrency limits changed
+            if hasattr(new_config, 'max_concurrent_processes'):
+                old_limit = self.max_concurrent_processes
+                self.max_concurrent_processes = getattr(new_config, 'max_concurrent_processes', old_limit)
+                if self.max_concurrent_processes != old_limit:
+                    self._processing_semaphore = asyncio.Semaphore(self.max_concurrent_processes)
+                
+            logger.info("DTESN components reinitialized with new configuration")
+            
+        except Exception as e:
+            logger.error(f"Failed to reinitialize DTESN components: {e}")
+            raise
+    
+    async def _apply_config_changes(self, old_config: 'DTESNConfig', new_config: 'DTESNConfig'):
+        """Apply non-critical configuration changes."""
+        try:
+            # Update caching settings
+            if old_config.enable_caching != new_config.enable_caching:
+                logger.info(f"Caching {'enabled' if new_config.enable_caching else 'disabled'}")
+            
+            # Update performance monitoring
+            if old_config.enable_performance_monitoring != new_config.enable_performance_monitoring:
+                logger.info(f"Performance monitoring {'enabled' if new_config.enable_performance_monitoring else 'disabled'}")
+            
+            # Update cache TTL
+            if old_config.cache_ttl_seconds != new_config.cache_ttl_seconds:
+                logger.info(f"Cache TTL updated to {new_config.cache_ttl_seconds} seconds")
+                
+        except Exception as e:
+            logger.error(f"Failed to apply configuration changes: {e}")
+            raise
     async def _initialize_data_processing_pipeline(self):
         """Initialize enhanced data processing pipeline (Phase 7.1.3)."""
         try:
