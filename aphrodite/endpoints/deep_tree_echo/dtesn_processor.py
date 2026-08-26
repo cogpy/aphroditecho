@@ -11,7 +11,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 try:
@@ -198,14 +198,9 @@ class DTESNProcessor:
         max_concurrent_processes: int = 37,  # Optimized for 37 concurrent streams
         enable_async_optimization: bool = True,
         enable_dynamic_config: bool = True,
-    ):
-        """
-        Initialize DTESN processor with enhanced engine integration
-        and 10x async processing capability.
-        max_concurrent_processes: int = 10,
         enable_dynamic_batching: bool = True,
         batch_config: Optional[BatchConfiguration] = None,
-        server_load_tracker: Optional[callable] = None,
+        server_load_tracker: Optional[Callable[[], float]] = None,
     ):
         """
         Initialize DTESN processor with enhanced engine integration,
@@ -216,6 +211,7 @@ class DTESNProcessor:
             engine: Aphrodite engine for comprehensive model integration
             max_concurrent_processes: Maximum concurrent processing operations (enhanced default: 100)
             enable_async_optimization: Enable advanced async optimizations
+            enable_dynamic_config: Enable runtime dynamic configuration controls
             max_concurrent_processes: Maximum concurrent processing operations
             enable_dynamic_batching: Enable intelligent request batching
             batch_config: Configuration for batch processing behavior
@@ -225,6 +221,7 @@ class DTESNProcessor:
         self.engine = engine
         self.max_concurrent_processes = max_concurrent_processes
         self.enable_async_optimization = enable_async_optimization
+        self.enable_dynamic_config = enable_dynamic_config
         self.enable_dynamic_batching = enable_dynamic_batching
 
         # Initialize enhanced concurrent processing resources
@@ -649,63 +646,65 @@ class DTESNProcessor:
         self._processing_stats["total_requests"] += 1
         self._processing_stats["concurrent_requests"] += 1
         start_time = time.time()
+        selected_membrane = await self._select_optimal_membrane()
+        self._update_processing_load(selected_membrane, "add")
 
-            try:
-                # Task 6.2.3: Check for degradation conditions
-                if await self._check_degradation_conditions():
-                    await self._activate_degradation_mode()
-                else:
-                    await self._deactivate_degradation_mode()
+        try:
+            # Task 6.2.3: Check for degradation conditions
+            if await self._check_degradation_conditions():
+                await self._activate_degradation_mode()
+            else:
+                await self._deactivate_degradation_mode()
                 
-                # Sync with engine state before processing
-                await self._sync_with_engine_state()
+            # Sync with engine state before processing
+            await self._sync_with_engine_state()
 
-                # Use provided parameters or engine-optimized defaults
-                # Apply degradation if active
-                if self.degradation_active:
-                    depth = min(membrane_depth or self._get_optimal_membrane_depth(), 
-                               self.config.max_membrane_depth)
-                    size = min(esn_size or self._get_optimal_esn_size(),
-                              self.config.esn_reservoir_size)
-                else:
-                    depth = membrane_depth or self._get_optimal_membrane_depth()
-                    size = esn_size or self._get_optimal_esn_size()
+            # Use provided parameters or engine-optimized defaults
+            # Apply degradation if active
+            if self.degradation_active:
+                depth = min(membrane_depth or self._get_optimal_membrane_depth(),
+                           self.config.max_membrane_depth)
+                size = min(esn_size or self._get_optimal_esn_size(),
+                          self.config.esn_reservoir_size)
+            else:
+                depth = membrane_depth or self._get_optimal_membrane_depth()
+                size = esn_size or self._get_optimal_esn_size()
 
-                # Enhanced server-side data fetching from engine components
-                engine_context = (
-                    await self._fetch_comprehensive_engine_context()
+            # Enhanced server-side data fetching from engine components
+            engine_context = (
+                await self._fetch_comprehensive_engine_context()
+            )
+
+            # Process using enhanced concurrent or standard processing
+            if enable_concurrent:
+                result = await self._process_concurrent_dtesn(
+                    input_data, depth, size, engine_context
+                )
+            else:
+                result = await self._process_with_engine_backend(
+                    input_data, depth, size, engine_context
                 )
 
-                # Process using enhanced concurrent or standard processing
-                if enable_concurrent:
-                    result = await self._process_concurrent_dtesn(
-                        input_data, depth, size, engine_context
-                    )
-                else:
-                    result = await self._process_with_engine_backend(
-                        input_data, depth, size, engine_context
-                    )
+            processing_time = (time.time() - start_time) * 1000
+            result.processing_time_ms = processing_time
 
-                processing_time = (time.time() - start_time) * 1000
-                result.processing_time_ms = processing_time
+            # Update processing statistics
+            self._update_processing_stats(processing_time)
 
-                # Update processing statistics
-                self._update_processing_stats(processing_time)
+            logger.info(
+                f"DTESN processing completed in {processing_time:.2f}ms "
+                f"with engine integration"
+            )
+            return result
 
-                logger.info(
-                    f"DTESN processing completed in {processing_time:.2f}ms "
-                    f"with engine integration"
-                )
-                return result
-
-            except Exception as e:
-                self._processing_stats["failed_requests"] += 1
-                logger.error(f"DTESN processing error: {e}")
-                raise
-            finally:
-                self._processing_stats["concurrent_requests"] -= 1
-                # Task 6.2.3: Update load balancing tracking
-                self._update_processing_load(selected_membrane, "remove")
+        except Exception as e:
+            self._processing_stats["failed_requests"] += 1
+            logger.error(f"DTESN processing error: {e}")
+            raise
+        finally:
+            self._processing_stats["concurrent_requests"] -= 1
+            # Task 6.2.3: Update load balancing tracking
+            self._update_processing_load(selected_membrane, "remove")
 
     def _get_optimal_membrane_depth(self) -> int:
         """

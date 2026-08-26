@@ -8,7 +8,7 @@ with enhanced async resource management, concurrency control, and comprehensive 
 import time
 import asyncio
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import Request, Response, HTTPException
 from fastapi.responses import JSONResponse

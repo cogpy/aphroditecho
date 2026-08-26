@@ -36,8 +36,10 @@ try:
     from aphrodite.endpoints.deep_tree_echo.config import DTESNConfig
     DTESN_AVAILABLE = True
     logger.info("DTESN components available for OpenAI route integration")
-except ImportError as e:
+except Exception as e:
     logger.warning(f"DTESN components not available: {e}")
+    DTESNProcessor = Any  # type: ignore[assignment]
+    DTESNConfig = Any  # type: ignore[assignment]
     DTESN_AVAILABLE = False
 
 # Create router for DTESN-enhanced OpenAI endpoints
